@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#16202e">
+<meta name="mobile-web-app-capable" content="yes">
+<title>建築鬼ごっこ STEP1</title>
+<style>
+  :root { --ui-bg: rgba(10, 16, 28, 0.72); --accent: #ffd34d; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #0d1320; color: #fff;
+    touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+    font-family: system-ui, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /* ---------- HUD ---------- */
+  #hud { position: fixed; left: 0; right: 0; top: 0; pointer-events: none; display: none;
+         padding: calc(env(safe-area-inset-top) + 6px) 8px 0; }
+  #topbar { display: flex; gap: 6px; align-items: center; justify-content: flex-start; margin-right: 124px; }
+  .pill { background: var(--ui-bg); border-radius: 999px; padding: 5px 11px; font-weight: 700; font-size: 15px;
+          white-space: nowrap; border: 1px solid rgba(255,255,255,.12); }
+  #phase.day { color: #ffe27a; } #phase.night { color: #9fc4ff; }
+  #timer { font-variant-numeric: tabular-nums; min-width: 48px; text-align: center; }
+  #status { margin-top: 6px; display: inline-flex; flex-direction: column; gap: 5px; background: var(--ui-bg);
+            border-radius: 12px; padding: 7px 10px; font-size: 14px; font-weight: 700; border: 1px solid rgba(255,255,255,.12); }
+  #status .row { display: flex; gap: 12px; align-items: center; }
+  .wood { color: #e0a96d; } .stone { color: #c9d1dc; } .fruit { color: #ff6b6b; letter-spacing: 2px; }
+  #stamina { width: 120px; height: 8px; background: rgba(255,255,255,.15); border-radius: 4px; overflow: hidden; }
+  #stamina > div { height: 100%; width: 100%; background: linear-gradient(90deg, #4ee08a, #b8f56b); }
+  #minimap { position: fixed; top: calc(env(safe-area-inset-top) + 6px); right: 8px; width: 112px; height: 112px;
+             border-radius: 10px; border: 2px solid rgba(255,255,255,.35); background: #000; display: none; pointer-events: none; }
+
+  #telop { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 196px); transform: translateX(-50%);
+           background: linear-gradient(90deg, rgba(180,40,40,0), rgba(190,40,40,.92) 15%, rgba(190,40,40,.92) 85%, rgba(180,40,40,0));
+           color: #fff; font-weight: 800; font-size: 17px; padding: 9px 40px; white-space: nowrap; pointer-events: none;
+           opacity: 0; transition: opacity .3s; text-shadow: 0 2px 3px rgba(0,0,0,.5); max-width: 96vw; overflow: hidden; text-overflow: ellipsis; }
+  #telop.show { opacity: 1; }
+  #telop.blue { background: linear-gradient(90deg, rgba(30,60,160,0), rgba(40,70,170,.92) 15%, rgba(40,70,170,.92) 85%, rgba(30,60,160,0)); }
+  #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 200px); transform: translateX(-50%);
+           background: rgba(0,0,0,.7); padding: 6px 14px; border-radius: 8px; font-size: 14px; font-weight: 700;
+           opacity: 0; transition: opacity .2s; pointer-events: none; white-space: nowrap; }
+  #toast.show { opacity: 1; }
+
+  /* ---------- ボタン ---------- */
+  #buttons { position: fixed; right: calc(env(safe-area-inset-right) + 14px); bottom: calc(env(safe-area-inset-bottom) + 22px);
+             display: none; width: 196px; height: 176px; }
+  .btn { position: absolute; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+         font-weight: 800; color: #fff; border: 3px solid rgba(255,255,255,.55); box-shadow: 0 4px 10px rgba(0,0,0,.4);
+         touch-action: none; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+  .btn small { font-size: 10px; font-weight: 700; opacity: .9; margin-top: 1px; }
+  .btn.pressed { transform: scale(.92); filter: brightness(1.25); }
+  #btnPick  { width: 70px; height: 70px; left: 0;   bottom: 4px;  background: #2f9a5b; font-size: 16px; }
+  #btnBuild { width: 78px; height: 78px; left: 52px; bottom: 96px; background: #b06d2c; font-size: 16px; }
+  #btnHit   { width: 86px; height: 86px; right: 0;  bottom: 0;    background: #c43c3c; font-size: 18px; }
+  #btnAttack{ width: 110px; height: 110px; right: 0; bottom: 0; background: #8d2bb3; font-size: 17px; text-align: center; line-height: 1.15; }
+  #btnBuild .ring { position: absolute; inset: -6px; border-radius: 50%; border: 4px solid transparent; }
+
+  /* ---------- 画面 ---------- */
+  #screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 16px; padding: 24px; box-sizing: border-box; text-align: center;
+            background: radial-gradient(ellipse at 50% 30%, #2b3d5c 0%, #121a2a 70%); }
+  #screen.hidden { display: none; }
+  #screen h1 { font-size: 40px; margin: 0; line-height: 1.15; letter-spacing: 2px;
+               text-shadow: 0 4px 0 #b3471f, 0 8px 18px rgba(0,0,0,.5); color: #ffd34d; }
+  #screen h2 { margin: 0 0 4px; font-size: 24px; }
+  #screen p  { margin: 0; color: #c8d3e6; font-size: 14px; line-height: 1.6; }
+  .choice { width: min(320px, 86vw); padding: 16px 14px; border-radius: 16px; border: 3px solid rgba(255,255,255,.35);
+            font-size: 22px; font-weight: 800; color: #fff; display: flex; flex-direction: column; gap: 4px; align-items: center; }
+  .choice span { font-size: 13px; font-weight: 600; opacity: .92; line-height: 1.5; }
+  .choice:active { transform: scale(.97); }
+  .c-human { background: linear-gradient(160deg, #3b7de0, #2554a8); }
+  .c-oni   { background: linear-gradient(160deg, #d9483b, #962a20); }
+  .c-carn  { background: linear-gradient(160deg, #e0832f, #a3521a); }
+  .c-mons  { background: linear-gradient(160deg, #9b46c9, #5f2486); }
+  .c-plain { background: linear-gradient(160deg, #3a4a66, #263247); font-size: 18px; }
+  .tap { animation: blink 1.2s infinite; font-weight: 800; font-size: 18px; color: #fff !important; margin-top: 18px !important; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .result-big { font-size: 34px; font-weight: 900; }
+  .win { color: #ffd34d; } .lose { color: #8fa3c4; }
+  .stats { background: rgba(0,0,0,.3); border-radius: 12px; padding: 10px 18px; font-size: 15px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div id="topbar">
+    <div class="pill" id="phase">☀ 昼</div>
+    <div class="pill" id="timer">1:30</div>
+    <div class="pill" id="alive">人 6/6</div>
+  </div>
+  <div id="status"></div>
+</div>
+<canvas id="minimap" width="112" height="112"></canvas>
+<div id="telop"></div>
+<div id="toast"></div>
+
+<div id="buttons">
+  <div class="btn" id="btnPick">拾う</div>
+  <div class="btn" id="btnBuild">建てる<small id="buildLabel">足場</small><div class="ring" id="buildRing"></div></div>
+  <div class="btn" id="btnHit">叩く</div>
+  <div class="btn" id="btnAttack">攻撃<small>タッチ/破壊</small></div>
+</div>
+
+<div id="screen"></div>
+
+<script>
+'use strict';
+
+// =====================================================================
+// 調整用の定数
+// =====================================================================
+const DAY_TIME = 90;          // 昼フェーズの長さ(秒)
+const NIGHT_TIME = 120;       // 夜フェーズの長さ(秒)
+const FREEZE_LIMIT = 30;      // 凍結してから脱落するまでの秒数
+const MAX_FREEZE_COUNT = 3;   // この回数凍結した人は、次のタッチで即脱落
+const HUMAN_COUNT = 6;        // 人の数
+const ONI_COUNT = 2;          // 鬼の数
+
+// ---- 細かい調整 ----
+const EVENT_INTERVAL = 30;          // 昼のランダムイベント間隔(秒)
+const TILE = 40;                    // 1マスの大きさ(px)
+const MAP_W = 40, MAP_H = 40;       // マップの大きさ(マス)
+const VIEW_TILES = 11;              // 縦画面で横方向に見えるマス数
+const HUMAN_SPEED = 150;
+const CARNIVORE_SPEED = 172;        // 肉食動物: 足が速い
+const MONSTER_SPEED = 118;          // モンスター: 遅い
+const FRUIT_BONUS = 0.08;           // 力の実1個あたりの夜の速度アップ率
+const MAX_FRUITS = 3;
+const FRUIT_COUNT = 10;
+const BOX_COUNT = 45;
+const BOX_ITEMS = 3;                // 箱1つから出る資材の数
+const CHEST_ITEMS = 26;             // 巨大宝箱から出る資材の数
+const RAIN_BOXES = 14;              // 資材の雨で降る箱の数
+const COST = { scaffold: { wood: 2, stone: 0 }, wall: { wood: 0, stone: 3 } };
+const STRUCT_HP = { scaffold: 4, wall: 8 };
+const ONI_DAMAGE = { carnivore: 1, monster: 5 };  // モンスターは足場1回・壁2回で破壊
+const SCAFFOLD_SAFE_TIME = 5;       // 同じ足場にこの秒数いると崩れ始める
+const SCAFFOLD_CRUMBLE_TIME = 2;    // 崩れ始めてから消えるまで
+const THAW_TIME = 2;                // 解凍に必要な接触時間
+const HIT_STUN = 2;                 // 叩かれた鬼の気絶時間
+const HIT_COST = 35;                // 叩くのに使うスタミナ
+const STAMINA_MAX = 100;
+const STAMINA_REGEN = 12;           // 毎秒のスタミナ回復
+const HIT_RANGE = 58;
+const ONI_ATTACK_RANGE = 54;
+const ONI_ATTACK_CD = 0.6;
+const LONG_PRESS = 0.45;            // 建てるボタン長押しで種類切り替え(秒)
+const LIGHT_R = 200, ALLY_LIGHT_R = 105;
+
+const HUMAN_R = 14, CARNIVORE_R = 16, MONSTER_R = 21;
+const HUMAN_COLORS = ['#3d8bfd', '#20c997', '#ffc233', '#f783ac', '#9775fa', '#66d9e8'];
+const TAU = Math.PI * 2;
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// =====================================================================
+// ユーティリティ
+// =====================================================================
+const rand = (a, b) => a + Math.random() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const tileOf = (p) => Math.floor(p / TILE);
+const norm = (x, y) => { const l = Math.hypot(x, y); return l > 1e-6 ? { x: x / l, y: y / l } : { x: 0, y: 0 }; };
+function nearest(list, p, filter) {
+  let best = null, bd = Infinity;
+  for (const e of list) { if (filter && !filter(e)) continue; const d = dist(e, p); if (d < bd) { bd = d; best = e; } }
+  return best;
+}
+function fmtTime(t) { t = Math.max(0, Math.ceil(t)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); }
+
+// =====================================================================
+// DOM / キャンバス
+// =====================================================================
+const $ = (id) => document.getElementById(id);
+const canvas = $('game'), ctx = canvas.getContext('2d');
+const mini = $('minimap'), mctx = mini.getContext('2d');
+const darkCanvas = document.createElement('canvas'), dctx = darkCanvas.getContext('2d');
+let cssW = 0, cssH = 0, dpr = 1, worldScale = 1;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cssW = window.innerWidth; cssH = window.innerHeight;
+  canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  darkCanvas.width = canvas.width; darkCanvas.height = canvas.height;
+  worldScale = Math.min(cssW, cssH * 0.75) / (VIEW_TILES * TILE);
+  const md = Math.round(112 * dpr); mini.width = md; mini.height = md;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ズーム・スクロール・長押しメニューを無効化
+['gesturestart', 'gesturechange', 'dblclick', 'contextmenu'].forEach((ev) =>
+  document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('touchstart', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+
+// =====================================================================
+// ゲーム状態
+// =====================================================================
+let G = null;          // 1プレイ分の状態
+let scene = 'title';   // title / side / oniType / day / night / result
+let grid, structs, mapCanvas;
+let playerSide = 'human', playerOniType = 'carnivore';
+const ONI_SPAWNS = [{ tx: 2, ty: 2 }, { tx: MAP_W - 3, ty: MAP_H - 3 }, { tx: MAP_W - 3, ty: 2 }, { tx: 2, ty: MAP_H - 3 }];
+
+// ---------------------------------------------------------------------
+// マップ生成
+// ---------------------------------------------------------------------
+function genMap() {
+  grid = []; structs = [];
+  for (let y = 0; y < MAP_H; y++) {
+    grid.push(new Array(MAP_W).fill(0));
+    structs.push(new Array(MAP_W).fill(null));
+  }
+  for (let x = 0; x < MAP_W; x++) { grid[0][x] = 1; grid[MAP_H - 1][x] = 1; }
+  for (let y = 0; y < MAP_H; y++) { grid[y][0] = 1; grid[y][MAP_W - 1] = 1; }
+  const cx = MAP_W >> 1, cy = MAP_H >> 1;
+  const reserved = (x, y) => (Math.abs(x - cx) <= 3 && Math.abs(y - cy) <= 3) ||
+    ONI_SPAWNS.some((s) => Math.abs(s.tx - x) <= 2 && Math.abs(s.ty - y) <= 2);
+  for (let i = 0; i < 75; i++) {
+    let x = randInt(2, MAP_W - 3), y = randInt(2, MAP_H - 3);
+    const n = randInt(1, 5);
+    for (let k = 0; k < n; k++) {
+      if (!reserved(x, y) && x > 0 && y > 0 && x < MAP_W - 1 && y < MAP_H - 1) grid[y][x] = 1;
+      const d = DIRS4[randInt(0, 3)]; x += d[0]; y += d[1];
+    }
+  }
+  // 中央からたどり着けない床は岩で埋める(閉じ込め防止)
+  const seen = new Uint8Array(MAP_W * MAP_H), q = [cy * MAP_W + cx]; seen[q[0]] = 1;
+  while (q.length) {
+    const c = q.pop(), x = c % MAP_W, y = (c / MAP_W) | 0;
+    for (const [dx, dy] of DIRS4) {
+      const nx = x + dx, ny = y + dy, ni = ny * MAP_W + nx;
+      if (grid[ny][nx] === 0 && !seen[ni]) { seen[ni] = 1; q.push(ni); }
+    }
+  }
+  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) if (grid[y][x] === 0 && !seen[y * MAP_W + x]) grid[y][x] = 1;
+  renderMapCanvas();
+}
+
+function renderMapCanvas() {
+  mapCanvas = document.createElement('canvas');
+  mapCanvas.width = MAP_W * TILE; mapCanvas.height = MAP_H * TILE;
+  const c = mapCanvas.getContext('2d');
+  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+    const px = x * TILE, py = y * TILE;
+    c.fillStyle = (x + y) % 2 ? '#78c26a' : '#71bb63';
+    c.fillRect(px, py, TILE, TILE);
+    if (Math.random() < 0.25) { // 草のつぶつぶ
+      c.fillStyle = '#5fa653';
+      for (let k = 0; k < 3; k++) c.fillRect(px + rand(4, 34), py + rand(4, 34), 3, 5);
+    }
+  }
+  for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+    if (grid[y][x] !== 1) continue;
+    const px = x * TILE, py = y * TILE;
+    const border = x === 0 || y === 0 || x === MAP_W - 1 || y === MAP_H - 1;
+    c.fillStyle = 'rgba(0,0,0,.22)'; roundRect(c, px + 3, py + 6, TILE - 4, TILE - 4, 9); c.fill();
+    c.fillStyle = border ? '#4e5560' : '#8a929c'; roundRect(c, px + 1, py + 1, TILE - 3, TILE - 4, 9); c.fill();
+    c.fillStyle = border ? '#5f6772' : '#a3abb4'; roundRect(c, px + 5, py + 4, TILE - 14, TILE - 16, 6); c.fill();
+  }
+}
+
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+  c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+}
+
+const inMap = (tx, ty) => tx >= 0 && ty >= 0 && tx < MAP_W && ty < MAP_H;
+function isSolid(tx, ty) {
+  if (!inMap(tx, ty) || grid[ty][tx] === 1) return true;
+  const s = structs[ty][tx];
+  return !!(s && s.type === 'wall');
+}
+function collides(x, y, r) {
+  const x0 = tileOf(x - r), x1 = tileOf(x + r), y0 = tileOf(y - r), y1 = tileOf(y + r);
+  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+    if (!isSolid(tx, ty)) continue;
+    const nx = clamp(x, tx * TILE, tx * TILE + TILE), ny = clamp(y, ty * TILE, ty * TILE + TILE);
+    if ((x - nx) ** 2 + (y - ny) ** 2 < r * r) return true;
+  }
+  return false;
+}
+function moveEntity(e, dx, dy) {
+  const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 8) || 1;
+  for (let i = 0; i < steps; i++) {
+    const sx = dx / steps, sy = dy / steps;
+    if (!collides(e.x + sx, e.y, e.r)) e.x += sx;
+    if (!collides(e.x, e.y + sy, e.r)) e.y += sy;
+  }
+}
+function randomFloor(margin = 1, test) {
+  for (let i = 0; i < 800; i++) {
+    const tx = randInt(margin, MAP_W - 1 - margin), ty = randInt(margin, MAP_H - 1 - margin);
+    if (grid[ty][tx] === 0 && !structs[ty][tx] && (!test || test(tx, ty))) return { tx, ty };
+  }
+  return { tx: MAP_W >> 1, ty: MAP_H >> 1 };
+}
+const center = (t) => ({ x: t.tx * TILE + TILE / 2, y: t.ty * TILE + TILE / 2 });
+
+// ---------------------------------------------------------------------
+// 経路探索(BFS)。allowWalls=true なら壁を通れるものとして探す(壊して進む用)
+// ---------------------------------------------------------------------
+const bfsPrev = new Int32Array(MAP_W * MAP_H), bfsQueue = new Int32Array(MAP_W * MAP_H);
+function bfsNext(sx, sy, gx, gy, allowWalls) {
+  if (!inMap(gx, gy) || grid[gy][gx] === 1) return null;
+  bfsPrev.fill(-1);
+  const start = sy * MAP_W + sx, goal = gy * MAP_W + gx;
+  let head = 0, tail = 0; bfsQueue[tail++] = start; bfsPrev[start] = start;
+  while (head < tail) {
+    const c = bfsQueue[head++];
+    if (c === goal) break;
+    const x = c % MAP_W, y = (c / MAP_W) | 0;
+    for (const [dx, dy] of DIRS4) {
+      const nx = x + dx, ny = y + dy;
+      if (!inMap(nx, ny) || grid[ny][nx] === 1) continue;
+      const ni = ny * MAP_W + nx;
+      if (bfsPrev[ni] !== -1) continue;
+      const s = structs[ny][nx];
+      if (!allowWalls && s && s.type === 'wall') continue;
+      bfsPrev[ni] = c; bfsQueue[tail++] = ni;
+    }
+  }
+  if (bfsPrev[goal] === -1) return null;
+  let c = goal;
+  while (bfsPrev[c] !== start) c = bfsPrev[c];
+  return { tx: c % MAP_W, ty: (c / MAP_W) | 0 };
+}
+
+// 目的地へ向かう方向を返す(経路は0.3秒ごとに再計算)
+function seek(e, tx, ty, canBreak) {
+  const sx = tileOf(e.x), sy = tileOf(e.y), gx = tileOf(tx), gy = tileOf(ty);
+  if (sx === gx && sy === gy) { e.ai.next = null; return norm(tx - e.x, ty - e.y); }
+  const ai = e.ai;
+  if (ai.pathT <= 0 || ai.goal !== gy * MAP_W + gx || ai.from !== sy * MAP_W + sx || !ai.next) {
+    ai.pathT = 0.3; ai.goal = gy * MAP_W + gx; ai.from = sy * MAP_W + sx;
+    ai.next = bfsNext(sx, sy, gx, gy, false);
+    if (!ai.next && canBreak) ai.next = bfsNext(sx, sy, gx, gy, true);
+  }
+  if (!ai.next) return norm(tx - e.x, ty - e.y);
+  if (ai.next.tx === gx && ai.next.ty === gy) return norm(tx - e.x, ty - e.y);
+  const c = center(ai.next);
+  return norm(c.x - e.x, c.y - e.y);
+}
+
+// =====================================================================
+// エンティティ生成
+// =====================================================================
+function makeHuman(i, isPlayer, pos) {
+  return {
+    kind: 'human', id: i, isPlayer, x: pos.x, y: pos.y, r: HUMAN_R, dir: -Math.PI / 2,
+    color: HUMAN_COLORS[i % HUMAN_COLORS.length], name: isPlayer ? 'あなた' : 'CPU' + i,
+    wood: 0, stone: 0, stamina: STAMINA_MAX, state: 'ok', freezeTimer: 0, freezeCount: 0, thaw: 0,
+    buildType: 'scaffold', scafTile: -1, scafTime: 0, swing: 0, mv: { x: 0, y: 0 }, moving: false,
+    ai: newAI(),
+  };
+}
+function makeOni(i, type, isPlayer, pos) {
+  return {
+    kind: 'oni', id: i, type, isPlayer, x: pos.x, y: pos.y, r: type === 'monster' ? MONSTER_R : CARNIVORE_R,
+    dir: Math.PI / 2, fruits: 0, stun: 0, atkCd: 0, freezeCd: 0, swing: 0, mv: { x: 0, y: 0 }, moving: false,
+    ai: newAI(),
+  };
+}
+function newAI() {
+  return { pathT: 0, goal: -1, from: -1, next: null, wander: null, wanderT: 0, buildCd: rand(2, 5), hitCd: 0,
+           fleeA: rand(0, TAU), lastX: 0, lastY: 0, stuckT: 0, unstickT: 0, unstickA: 0, banTile: -1, banT: 0, built: 0 };
+}
+
+function spawnBox(tx, ty, big = false, z = 0) {
+  const c = center({ tx, ty });
+  G.boxes.push({ x: c.x + rand(-6, 6), y: c.y + rand(-6, 6), z, vz: 0, big, opened: false, r: big ? 26 : 13 });
+}
+
+// =====================================================================
+// ゲーム開始・フェーズ
+// =====================================================================
+function startGame() {
+  genMap();
+  G = {
+    phase: 'day', timeLeft: DAY_TIME, dayElapsed: 0, nextEvent: EVENT_INTERVAL,
+    humans: [], onis: [], boxes: [], items: [], fruits: [], fx: [], particles: [],
+    player: null, camera: { x: 0, y: 0 }, spectate: null, stats: { freezes: 0, thaws: 0, hits: 0 },
+    chest: null, rainArea: null, lastTelop: '',
+  };
+  const cx = (MAP_W >> 1) * TILE + TILE / 2, cy = (MAP_H >> 1) * TILE + TILE / 2;
+  for (let i = 0; i < HUMAN_COUNT; i++) {
+    const a = (i / HUMAN_COUNT) * TAU;
+    G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, { x: cx + Math.cos(a) * 55, y: cy + Math.sin(a) * 55 }));
+  }
+  for (let i = 0; i < ONI_COUNT; i++) {
+    let type;
+    if (playerSide === 'oni') type = i === 0 ? playerOniType : (playerOniType === 'carnivore' ? 'monster' : 'carnivore');
+    else type = i % 2 === 0 ? 'carnivore' : 'monster';
+    G.onis.push(makeOni(i, type, playerSide === 'oni' && i === 0, center(ONI_SPAWNS[i % ONI_SPAWNS.length])));
+  }
+  G.player = playerSide === 'human' ? G.humans[0] : G.onis[0];
+  for (let i = 0; i < BOX_COUNT; i++) { const t = randomFloor(1); spawnBox(t.tx, t.ty); }
+  for (let i = 0; i < FRUIT_COUNT; i++) {
+    const t = randomFloor(2); const c = center(t); G.fruits.push({ x: c.x, y: c.y, r: 11, bob: rand(0, TAU) });
+  }
+  G.camera.x = G.player.x; G.camera.y = G.player.y;
+  scene = 'day';
+  showScreen(null);
+  setupHUD();
+  telop(playerSide === 'human' ? '昼: 箱を開けて資材を集め、建築しよう！' : '昼: 力の実を集めよう（まだ人には触れても無効）', 'blue');
+}
+
+function startNight() {
+  G.phase = 'night'; scene = 'night'; G.timeLeft = NIGHT_TIME;
+  G.fruits.length = 0; G.chest = null; G.rainArea = null;
+  G.onis.forEach((o, i) => { // 鬼は巣(四隅)から出発
+    const c = center(ONI_SPAWNS[i % ONI_SPAWNS.length]); o.x = c.x; o.y = c.y; o.ai = newAI();
+  });
+  G.humans.forEach((h) => { h.ai.next = null; h.scafTime = 0; h.scafTile = -1; });
+  telop('🌙 夜が来た… 鬼ごっこ開始！', '');
+  setupHUD();
+}
+
+function endGame(winner) {
+  scene = 'result';
+  const alive = G.humans.filter((h) => h.state !== 'out').length;
+  const youWin = winner === playerSide;
+  setupHUD(true);
+  showScreen(`
+    <div class="result-big ${youWin ? 'win' : 'lose'}">${youWin ? '🏆 勝利！' : '敗北…'}</div>
+    <h2>${winner === 'human' ? '人チーム' : '鬼チーム'}の勝ち</h2>
+    <div class="stats">
+      生き残った人: <b>${alive} / ${HUMAN_COUNT}</b><br>
+      凍結した回数: <b>${G.stats.freezes}</b><br>
+      解凍した回数: <b>${G.stats.thaws}</b><br>
+      鬼を叩いた回数: <b>${G.stats.hits}</b>
+    </div>
+    <button class="choice c-human" data-act="again">もう一度遊ぶ</button>
+    <button class="choice c-plain" data-act="title">タイトルへ</button>
+  `);
+}
+
+// ---------------------------------------------------------------------
+// 昼のランダムイベント
+// ---------------------------------------------------------------------
+function areaName(tx, ty) {
+  const third = (v, max) => (v < max / 3 ? 0 : v < (max * 2) / 3 ? 1 : 2);
+  const ns = ['北', '', '南'][third(ty, MAP_H)], ew = ['西', '', '東'][third(tx, MAP_W)];
+  return (ns + ew) || '中央';
+}
+function triggerEvent() {
+  if (Math.random() < 0.5) {
+    const c = randomFloor(5);
+    G.rainArea = { x: c.tx * TILE + TILE / 2, y: c.ty * TILE + TILE / 2, r: 4.5 * TILE, t: 6 };
+    for (let i = 0; i < RAIN_BOXES; i++) {
+      const t = randomFloor(1, (tx, ty) => Math.hypot(tx - c.tx, ty - c.ty) <= 4.5);
+      spawnBox(t.tx, t.ty, false, rand(260, 900));
+    }
+    telop(`📦 資材の雨！ ${areaName(c.tx, c.ty)}エリアに箱が降ってくる！`, '');
+  } else {
+    const t = randomFloor(3);
+    spawnBox(t.tx, t.ty, true, 0);
+    G.chest = G.boxes[G.boxes.length - 1];
+    telop(`💰 巨大宝箱が出現！ ${areaName(t.tx, t.ty)}エリアをさがせ！`, '');
+  }
+}
+
+// =====================================================================
+// アクション
+// =====================================================================
+function frontTile(e) {
+  const tx = tileOf(e.x), ty = tileOf(e.y);
+  const c = Math.cos(e.dir), s = Math.sin(e.dir);
+  return Math.abs(c) >= Math.abs(s) ? { tx: tx + Math.sign(c), ty } : { tx, ty: ty + Math.sign(s) };
+}
+function onScaffold(h) {
+  const tx = tileOf(h.x), ty = tileOf(h.y);
+  const s = inMap(tx, ty) && structs[ty][tx];
+  return !!(s && s.type === 'scaffold');
+}
+
+function openBox(b) {
+  if (b.opened || b.z > 0) return;
+  b.opened = true;
+  const n = b.big ? CHEST_ITEMS : BOX_ITEMS;
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, TAU), sp = b.big ? rand(60, 220) : rand(50, 130);
+    G.items.push({ x: b.x, y: b.y, z: 4, vz: rand(140, 260), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+                   type: Math.random() < 0.58 ? 'wood' : 'stone', age: 0, magnet: null });
+  }
+  burst(b.x, b.y, b.big ? '#ffd34d' : '#e3a25a', b.big ? 24 : 10);
+  if (b === G.chest) G.chest = null;
+}
+
+function doPick(h) {
+  let any = false;
+  for (const b of G.boxes) if (!b.opened && b.z <= 0 && dist(b, h) < h.r + b.r + 34) { openBox(b); any = true; }
+  for (const it of G.items) if (dist(it, h) < 95) { it.magnet = h; it.age = Math.max(it.age, 0.35); any = true; }
+  if (!any && h.isPlayer) toast('近くに箱や資材がない');
+}
+
+function canPlace(tx, ty, type) {
+  if (!inMap(tx, ty) || grid[ty][tx] !== 0 || structs[ty][tx]) return false;
+  const x0 = tx * TILE, y0 = ty * TILE;
+  for (const b of G.boxes) if (!b.opened && b.x > x0 - 6 && b.x < x0 + TILE + 6 && b.y > y0 - 6 && b.y < y0 + TILE + 6) return false;
+  if (type === 'wall') { // 壁はキャラと重なる場所には置けない(閉じ込め防止)
+    for (const e of [...G.humans, ...G.onis]) {
+      if (e.state === 'out') continue;
+      const nx = clamp(e.x, x0, x0 + TILE), ny = clamp(e.y, y0, y0 + TILE);
+      if ((e.x - nx) ** 2 + (e.y - ny) ** 2 < (e.r + 2) ** 2) return false;
+    }
+  }
+  return true;
+}
+
+function doBuild(h) {
+  const type = h.buildType, cost = COST[type];
+  if (h.wood < cost.wood || h.stone < cost.stone) {
+    if (h.isPlayer) toast(type === 'scaffold' ? `木材が足りない (足場: 木材${cost.wood})` : `石が足りない (壁: 石${cost.stone})`);
+    return false;
+  }
+  const t = frontTile(h);
+  if (!canPlace(t.tx, t.ty, type)) { if (h.isPlayer) toast('そこには建てられない'); return false; }
+  h.wood -= cost.wood; h.stone -= cost.stone;
+  structs[t.ty][t.tx] = { type, hp: STRUCT_HP[type], maxHp: STRUCT_HP[type], crumble: -1, shake: 0 };
+  const c = center(t); burst(c.x, c.y, type === 'wall' ? '#b8c0cc' : '#c98a4b', 10);
+  return true;
+}
+
+function doHit(h) {
+  if (h.state !== 'ok') return;
+  if (h.stamina < HIT_COST) { if (h.isPlayer) toast('スタミナが足りない'); return; }
+  h.stamina -= HIT_COST; h.swing = 0.25;
+  let hit = false;
+  for (const o of G.onis) {
+    const d = dist(o, h);
+    if (d > HIT_RANGE + o.r) continue;
+    const facing = Math.cos(Math.atan2(o.y - h.y, o.x - h.x) - h.dir);
+    if (facing < 0.1 && d > h.r + o.r + 6) continue;
+    o.stun = HIT_STUN; hit = true;
+    addFx(o.x, o.y - 30, 'ゴンッ!', '#ffe066');
+    burst(o.x, o.y, '#ffe066', 8);
+  }
+  if (hit) G.stats.hits++;
+}
+
+function doOniAttack(o, forceTile) {
+  if (o.atkCd > 0 || o.stun > 0) return;
+  o.atkCd = ONI_ATTACK_CD; o.swing = 0.25;
+  if (G.phase === 'night' && !forceTile) {
+    for (const h of G.humans) {
+      if (h.state !== 'ok') continue;
+      const d = dist(h, o);
+      if (d > ONI_ATTACK_RANGE + h.r) continue;
+      const facing = Math.cos(Math.atan2(h.y - o.y, h.x - o.x) - o.dir);
+      if (facing < 0.2 && d > o.r + h.r + 6) continue;
+      if (tryFreeze(o, h)) return;
+    }
+  }
+  const t = forceTile || frontTile(o);
+  const s = inMap(t.tx, t.ty) && structs[t.ty][t.tx];
+  if (!s) return;
+  if (G.phase !== 'night') { if (o.isPlayer) toast('昼のあいだは建物を壊せない'); return; }
+  damageStruct(t.tx, t.ty, ONI_DAMAGE[o.type]);
+}
+
+function damageStruct(tx, ty, dmg) {
+  const s = structs[ty][tx]; if (!s) return;
+  s.hp -= dmg; s.shake = 0.2;
+  const c = center({ tx, ty });
+  burst(c.x, c.y, s.type === 'wall' ? '#9aa3ad' : '#b07a43', 6);
+  if (s.hp <= 0) { structs[ty][tx] = null; burst(c.x, c.y, s.type === 'wall' ? '#9aa3ad' : '#b07a43', 16); addFx(c.x, c.y - 20, 'バキッ!', '#fff'); }
+}
+
+function tryFreeze(o, h) {
+  if (G.phase !== 'night' || h.state !== 'ok' || o.stun > 0 || o.freezeCd > 0) return false;
+  if (o.type === 'carnivore' && onScaffold(h)) { // 高鬼ルール
+    if (!h.safeFx || h.safeFx <= 0) { addFx(h.x, h.y - 30, 'セーフ!', '#7CFC9A'); h.safeFx = 0.8; }
+    return false;
+  }
+  o.freezeCd = 0.8;
+  if (h.freezeCount >= MAX_FREEZE_COUNT) { eliminate(h, '即脱落!'); return true; }
+  h.freezeCount++; h.state = 'frozen'; h.freezeTimer = FREEZE_LIMIT; h.thaw = 0;
+  G.stats.freezes++;
+  addFx(h.x, h.y - 32, '凍結!', '#9be7ff');
+  burst(h.x, h.y, '#c9f3ff', 14);
+  if (h.isPlayer) toast(`凍結！ 仲間に${THAW_TIME}秒触れてもらうと解凍`);
+  return true;
+}
+
+function eliminate(h, text) {
+  h.state = 'out';
+  addFx(h.x, h.y - 32, text || '脱落', '#ff8787');
+  burst(h.x, h.y, '#ff8787', 18);
+  if (h.isPlayer) telop('あなたは脱落… 仲間を観戦中', '');
+}
+
+// =====================================================================
+// 演出
+// =====================================================================
+function addFx(x, y, text, color) { G.fx.push({ x, y, text, color, t: 0 }); }
+function burst(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, TAU), sp = rand(40, 160);
+    G.particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, life: rand(0.3, 0.7), color, size: rand(2, 5) });
+  }
+}
+let telopTimer = null;
+function telop(text, cls) {
+  const el = $('telop'); el.textContent = text; el.className = 'show ' + (cls || '');
+  clearTimeout(telopTimer); telopTimer = setTimeout(() => (el.className = cls || ''), 3500);
+}
+let toastTimer = null, lastToast = '', lastToastAt = 0;
+function toast(text) {
+  const now = performance.now();
+  if (text === lastToast && now - lastToastAt < 700) return;
+  lastToast = text; lastToastAt = now;
+  const el = $('toast'); el.textContent = text; el.className = 'show';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.className = ''), 1400);
+}
+
+// =====================================================================
+// 入力(バーチャルスティック・ボタン・キーボード)
+// =====================================================================
+const input = { joyId: null, base: null, pos: null, vx: 0, vy: 0, keys: {} };
+const JOY_R = 56;
+const playing = () => scene === 'day' || scene === 'night';
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (!playing() || input.joyId !== null) return;
+  e.preventDefault();
+  input.joyId = e.pointerId; input.base = { x: e.clientX, y: e.clientY }; input.pos = { x: e.clientX, y: e.clientY };
+  input.vx = input.vy = 0;
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerId !== input.joyId) return;
+  let dx = e.clientX - input.base.x, dy = e.clientY - input.base.y;
+  const l = Math.hypot(dx, dy);
+  if (l > JOY_R) { dx = (dx / l) * JOY_R; dy = (dy / l) * JOY_R; }
+  input.pos = { x: input.base.x + dx, y: input.base.y + dy };
+  const m = Math.min(1, l / JOY_R);
+  const n = norm(dx, dy);
+  input.vx = n.x * (m < 0.15 ? 0 : m); input.vy = n.y * (m < 0.15 ? 0 : m);
+});
+const endJoy = (e) => { if (e.pointerId === input.joyId) { input.joyId = null; input.vx = input.vy = 0; } };
+canvas.addEventListener('pointerup', endJoy);
+canvas.addEventListener('pointercancel', endJoy);
+
+function bindButton(el, onDown, onUp) {
+  el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); el.classList.add('pressed');
+    try { el.setPointerCapture(e.pointerId); } catch (_) {} onDown && onDown(); });
+  const up = (e, cancel) => { el.classList.remove('pressed'); onUp && onUp(cancel); };
+  el.addEventListener('pointerup', (e) => up(e, false));
+  el.addEventListener('pointercancel', (e) => up(e, true));
+}
+const canAct = () => playing() && G.player && G.player.kind === 'human' && G.player.state === 'ok';
+bindButton($('btnPick'), () => canAct() && doPick(G.player));
+bindButton($('btnHit'), () => canAct() && doHit(G.player));
+bindButton($('btnAttack'), () => playing() && G.player.kind === 'oni' && doOniAttack(G.player));
+
+// 建てる: 短く押す=建築 / 長押し=種類切り替え
+const buildPress = { down: false, t: 0, switched: false };
+bindButton($('btnBuild'), () => { buildPress.down = true; buildPress.t = 0; buildPress.switched = false; },
+  (cancel) => {
+    if (buildPress.down && !buildPress.switched && !cancel && canAct()) doBuild(G.player);
+    buildPress.down = false; $('buildRing').style.borderColor = 'transparent';
+  });
+function switchBuildType() {
+  const h = G.player; h.buildType = h.buildType === 'scaffold' ? 'wall' : 'scaffold';
+  toast(h.buildType === 'scaffold' ? `建築: 足場 (木材${COST.scaffold.wood})` : `建築: 壁 (石${COST.wall.stone})`);
+  if (navigator.vibrate) try { navigator.vibrate(30); } catch (_) {}
+}
+
+window.addEventListener('keydown', (e) => {
+  input.keys[e.code] = true;
+  if (!playing() || e.repeat) return;
+  if (G.player.kind === 'human' && canAct()) {
+    if (e.code === 'KeyJ') doPick(G.player);
+    if (e.code === 'KeyK') doBuild(G.player);
+    if (e.code === 'KeyL' || e.code === 'Space') doHit(G.player);
+    if (e.code === 'KeyQ') switchBuildType();
+  } else if (G.player.kind === 'oni' && (e.code === 'KeyJ' || e.code === 'Space')) doOniAttack(G.player);
+});
+window.addEventListener('keyup', (e) => { input.keys[e.code] = false; });
+
+function playerMoveVector() {
+  let x = input.vx, y = input.vy;
+  const k = input.keys;
+  const kx = (k.KeyD || k.ArrowRight ? 1 : 0) - (k.KeyA || k.ArrowLeft ? 1 : 0);
+  const ky = (k.KeyS || k.ArrowDown ? 1 : 0) - (k.KeyW || k.ArrowUp ? 1 : 0);
+  if (kx || ky) { const n = norm(kx, ky); x = n.x; y = n.y; }
+  return { x, y };
+}
+
+// =====================================================================
+// CPU
+// =====================================================================
+function wander(e, speed = 0.55) {
+  const ai = e.ai;
+  ai.wanderT -= 1 / 60;
+  if (!ai.wander || ai.wanderT <= 0 || dist(ai.wander, e) < 20) {
+    ai.wander = center(randomFloor(2)); ai.wanderT = rand(4, 8);
+  }
+  const d = seek(e, ai.wander.x, ai.wander.y, false);
+  return { x: d.x * speed, y: d.y * speed };
+}
+
+function fleeDir(h) {
+  let best = null, bs = -Infinity;
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * TAU, dx = Math.cos(a), dy = Math.sin(a);
+    if (collides(h.x + dx * 26, h.y + dy * 26, h.r)) continue;
+    const px = h.x + dx * 90, py = h.y + dy * 90;
+    let md = Infinity;
+    for (const o of G.onis) md = Math.min(md, Math.hypot(px - o.x, py - o.y) * (o.stun > 0 ? 1.5 : 1));
+    let s = md;
+    if (collides(px, py, h.r)) s -= 45;
+    const ex = Math.min(px, MAP_W * TILE - px), ey = Math.min(py, MAP_H * TILE - py);
+    if (ex < 120) s -= (120 - ex); if (ey < 120) s -= (120 - ey);
+    s += 18 * Math.cos(a - h.ai.fleeA);
+    if (s > bs) { bs = s; best = a; }
+  }
+  if (best === null) return { x: 0, y: 0 };
+  h.ai.fleeA = best;
+  return { x: Math.cos(best), y: Math.sin(best) };
+}
+
+function findScaffold(h, maxTiles) {
+  const hx = tileOf(h.x), hy = tileOf(h.y);
+  let best = null, bd = Infinity;
+  for (let ty = hy - maxTiles; ty <= hy + maxTiles; ty++) for (let tx = hx - maxTiles; tx <= hx + maxTiles; tx++) {
+    if (!inMap(tx, ty)) continue;
+    const s = structs[ty][tx];
+    if (!s || s.type !== 'scaffold' || s.crumble >= 0) continue;
+    if (h.ai.banT > 0 && h.ai.banTile === ty * MAP_W + tx) continue;
+    const d = Math.hypot(tx - hx, ty - hy);
+    if (d < bd) { bd = d; best = { tx, ty }; }
+  }
+  return best;
+}
+
+function humanAI(h, dt) {
+  const ai = h.ai;
+  ai.hitCd -= dt; ai.banT -= dt; ai.buildCd -= dt;
+  let mv = { x: 0, y: 0 };
+  if (G.phase === 'day') {
+    if (ai.buildCd <= 0) {
+      ai.buildCd = rand(2.5, 5);
+      const want = h.wood >= COST.scaffold.wood && (ai.built < 3 || Math.random() < 0.3) ? 'scaffold'
+                 : h.stone >= COST.wall.stone && Math.random() < 0.35 ? 'wall' : null;
+      if (want) {
+        h.buildType = want;
+        const saved = h.dir;
+        for (const k of [0, 1, 2, 3].sort(() => Math.random() - 0.5)) {
+          h.dir = Math.atan2(DIRS4[k][1], DIRS4[k][0]);
+          if (doBuild(h)) { ai.built++; break; }
+        }
+        h.dir = saved;
+      }
+    }
+    const item = nearest(G.items, h, (it) => it.z < 30 && dist(it, h) < 260);
+    const box = nearest(G.boxes, h, (b) => !b.opened && b.z <= 0);
+    let target = item;
+    if (G.chest && dist(G.chest, h) < 900) target = G.chest;
+    else if (!target || (box && dist(box, h) < dist(item, h) * 0.6)) target = box || item;
+    mv = target ? seek(h, target.x, target.y, false) : wander(h);
+    if (target && target.big === undefined && dist(target, h) < 120) doPick(h);
+  } else {
+    const near = nearest(G.onis, h);
+    const nd = near ? dist(near, h) * (near.stun > 0 ? 1.8 : 1) : Infinity;
+    const minOniDist = (p) => Math.min(...G.onis.map((o) => dist(o, p) * (o.stun > 0 ? 1.8 : 1)));
+    const onS = onScaffold(h);
+    const tIdx = tileOf(h.y) * MAP_W + tileOf(h.x);
+    if (onS && h.scafTime > 3.6) { ai.banTile = tIdx; ai.banT = 5; }
+    const ally = nearest(G.humans, h, (o) => o.state === 'frozen' && dist(o, h) < 420 && minOniDist(o) > 210);
+    const monsterNear = G.onis.some((o) => o.type === 'monster' && dist(o, h) < 170 && o.stun <= 0);
+    if (onS && h.scafTime < 3.6 && nd < 260 && !monsterNear) {
+      mv = { x: 0, y: 0 }; // 足場でセーフ(肉食動物には捕まらない)
+      h.dir = Math.atan2(near.y - h.y, near.x - h.x);
+    } else if (ally && nd > 170) {
+      mv = dist(ally, h) > h.r * 2 + 6 ? seek(h, ally.x, ally.y, false) : { x: 0, y: 0 };
+    } else if (nd < 300) {
+      const sc = near.type === 'carnivore' ? findScaffold(h, 4) : null;
+      if (sc && nd > 45) { const c = center(sc); mv = seek(h, c.x, c.y, false); }
+      else mv = fleeDir(h);
+      if (nd < 52 && near.stun <= 0 && h.stamina >= HIT_COST && ai.hitCd <= 0) {
+        h.dir = Math.atan2(near.y - h.y, near.x - h.x); doHit(h); ai.hitCd = 1.2;
+      }
+    } else {
+      mv = wander(h, 0.5);
+    }
+  }
+  // 引っかかり対策
+  if (ai.unstickT > 0) { ai.unstickT -= dt; mv = { x: Math.cos(ai.unstickA), y: Math.sin(ai.unstickA) }; }
+  h.mv = mv;
+}
+
+function oniAI(o, dt) {
+  const ai = o.ai;
+  let mv = { x: 0, y: 0 };
+  if (o.stun > 0) { o.mv = mv; return; }
+  if (G.phase === 'day') {
+    const f = o.fruits < MAX_FRUITS ? nearest(G.fruits, o) : null;
+    mv = f ? seek(o, f.x, f.y, false) : wander(o, 0.6);
+  } else {
+    const ok = G.humans.filter((h) => h.state === 'ok');
+    let target = null, waiting = false;
+    if (o.type === 'carnivore') {
+      target = nearest(ok, o, (h) => !onScaffold(h));
+      if (!target) { target = nearest(ok, o); waiting = true; }
+    } else target = nearest(ok, o);
+    if (!target) {
+      const fr = nearest(G.humans, o, (h) => h.state === 'frozen');
+      mv = fr && dist(fr, o) > 120 ? seek(o, fr.x, fr.y, false) : wander(o, 0.4);
+    } else {
+      const d = dist(o, target);
+      if (waiting && d < 95) { // 足場の下で待ち伏せ
+        mv = { x: 0, y: 0 }; o.dir = Math.atan2(target.y - o.y, target.x - o.x);
+      } else {
+        mv = seek(o, target.x, target.y, true);
+      }
+      if (o.type === 'monster' && onScaffold(target) && d < 80) {
+        o.dir = Math.atan2(target.y - o.y, target.x - o.x);
+        doOniAttack(o, { tx: tileOf(target.x), ty: tileOf(target.y) });
+      } else if (d < ONI_ATTACK_RANGE + target.r && !waiting) {
+        o.dir = Math.atan2(target.y - o.y, target.x - o.x); doOniAttack(o);
+      }
+      // 経路上に壁があれば壊す
+      const n = ai.next;
+      if (n && structs[n.ty][n.tx] && structs[n.ty][n.tx].type === 'wall') {
+        const c = center(n);
+        if (Math.hypot(c.x - o.x, c.y - o.y) < TILE * 1.05) { o.dir = Math.atan2(c.y - o.y, c.x - o.x); doOniAttack(o, n); }
+      }
+    }
+  }
+  if (ai.unstickT > 0) { ai.unstickT -= dt; mv = { x: Math.cos(ai.unstickA), y: Math.sin(ai.unstickA) }; }
+  o.mv = mv;
+}
+
+function checkStuck(e, dt) {
+  const ai = e.ai;
+  const wants = Math.hypot(e.mv.x, e.mv.y) > 0.3;
+  const moved = Math.hypot(e.x - ai.lastX, e.y - ai.lastY);
+  ai.lastX = e.x; ai.lastY = e.y;
+  if (wants && moved < 0.4) ai.stuckT += dt; else ai.stuckT = Math.max(0, ai.stuckT - dt);
+  if (ai.stuckT > 0.6) {
+    ai.stuckT = 0;
+    if (e.kind === 'oni' && G.phase === 'night') doOniAttack(e);
+    ai.unstickT = 0.45; ai.unstickA = rand(0, TAU); ai.next = null;
+  }
+}
+
+// =====================================================================
+// 更新
+// =====================================================================
+function update(dt) {
+  if (!playing()) return;
+  G.timeLeft -= dt;
+
+  if (G.phase === 'day') {
+    G.dayElapsed += dt;
+    if (G.dayElapsed >= G.nextEvent && G.nextEvent < DAY_TIME) { triggerEvent(); G.nextEvent += EVENT_INTERVAL; }
+    if (G.rainArea) { G.rainArea.t -= dt; if (G.rainArea.t <= 0) G.rainArea = null; }
+    if (G.timeLeft <= 0) { startNight(); return; }
+  } else if (G.timeLeft <= 0) {
+    endGame(G.humans.some((h) => h.state !== 'out') ? 'human' : 'oni'); return;
+  }
+
+  // 長押し判定
+  if (buildPress.down && !buildPress.switched) {
+    buildPress.t += dt;
+    $('buildRing').style.borderColor = `rgba(255,255,255,${clamp(buildPress.t / LONG_PRESS, 0, 1)})`;
+    if (buildPress.t >= LONG_PRESS) { buildPress.switched = true; if (canAct()) switchBuildType(); $('buildRing').style.borderColor = 'transparent'; }
+  }
+
+  // --- 人 ---
+  for (const h of G.humans) {
+    if (h.state === 'out') continue;
+    h.stamina = Math.min(STAMINA_MAX, h.stamina + STAMINA_REGEN * dt);
+    h.swing = Math.max(0, h.swing - dt);
+    h.safeFx = (h.safeFx || 0) - dt;
+    if (h.state === 'frozen') { h.mv = { x: 0, y: 0 }; continue; }
+    if (h.isPlayer) h.mv = playerMoveVector(); else { h.ai.pathT -= dt; humanAI(h, dt); }
+    const m = Math.min(1, Math.hypot(h.mv.x, h.mv.y));
+    h.moving = m > 0.05;
+    if (h.moving) {
+      h.dir = Math.atan2(h.mv.y, h.mv.x);
+      moveEntity(h, h.mv.x * HUMAN_SPEED * dt, h.mv.y * HUMAN_SPEED * dt);
+    }
+    if (!h.isPlayer) checkStuck(h, dt);
+  }
+
+  // --- 鬼 ---
+  for (const o of G.onis) {
+    o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt);
+    if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, y: 0 } : playerMoveVector(); else { o.ai.pathT -= dt; oniAI(o, dt); }
+    const base = o.type === 'monster' ? MONSTER_SPEED : CARNIVORE_SPEED;
+    const sp = base * (G.phase === 'night' ? 1 + FRUIT_BONUS * o.fruits : 1);
+    o.moving = o.stun <= 0 && Math.hypot(o.mv.x, o.mv.y) > 0.05;
+    if (o.moving) { o.dir = Math.atan2(o.mv.y, o.mv.x); moveEntity(o, o.mv.x * sp * dt, o.mv.y * sp * dt); }
+    if (!o.isPlayer && o.stun <= 0) checkStuck(o, dt);
+  }
+
+  // --- 箱 ---
+  for (const b of G.boxes) {
+    if (b.z > 0) { b.vz -= 900 * dt; b.z = Math.max(0, b.z + b.vz * dt); if (b.z === 0) burst(b.x, b.y, '#d9b98a', 6); continue; }
+    if (b.opened) continue;
+    for (const h of G.humans) if (h.state === 'ok' && dist(h, b) < h.r + b.r + 2) { openBox(b); break; }
+  }
+  G.boxes = G.boxes.filter((b) => !b.opened);
+
+  // --- 資材 ---
+  for (const it of G.items) {
+    it.age += dt;
+    if (it.magnet && it.magnet.state === 'ok') {
+      const n = norm(it.magnet.x - it.x, it.magnet.y - it.y);
+      it.vx = n.x * 420; it.vy = n.y * 420;
+      it.x += it.vx * dt; it.y += it.vy * dt;
+    } else {
+      const nx = it.x + it.vx * dt, ny = it.y + it.vy * dt;
+      if (!collides(nx, it.y, 5)) it.x = nx; else it.vx *= -0.4;
+      if (!collides(it.x, ny, 5)) it.y = ny; else it.vy *= -0.4;
+      const f = Math.pow(0.06, dt); it.vx *= f; it.vy *= f;
+    }
+    if (it.z > 0 || it.vz > 0) { it.vz -= 700 * dt; it.z += it.vz * dt; if (it.z <= 0) { it.z = 0; it.vz = it.vz < -120 ? -it.vz * 0.35 : 0; } }
+    if (it.age < 0.35) continue;
+    for (const h of G.humans) {
+      if (h.state !== 'ok' || dist(h, it) > h.r + 11) continue;
+      h[it.type]++; it.taken = true;
+      if (h.isPlayer) addFx(h.x, h.y - 26, it.type === 'wood' ? '+木材' : '+石', it.type === 'wood' ? '#f0b97a' : '#e3e8ef');
+      break;
+    }
+  }
+  G.items = G.items.filter((it) => !it.taken);
+
+  // --- 力の実 ---
+  for (const f of G.fruits) {
+    f.bob += dt * 3;
+    for (const o of G.onis) {
+      if (o.fruits >= MAX_FRUITS || dist(o, f) > o.r + f.r) continue;
+      o.fruits++; f.taken = true;
+      addFx(o.x, o.y - 30, `力の実 ${o.fruits}/${MAX_FRUITS}`, '#ff8a8a');
+      burst(f.x, f.y, '#ff6b6b', 10);
+      break;
+    }
+  }
+  G.fruits = G.fruits.filter((f) => !f.taken);
+
+  // --- 夜のルール ---
+  if (G.phase === 'night') {
+    for (const o of G.onis) for (const h of G.humans) if (h.state === 'ok' && dist(o, h) < o.r + h.r) tryFreeze(o, h);
+    for (const h of G.humans) {
+      if (h.state === 'frozen') {
+        const helpers = G.humans.filter((a) => a !== h && a.state === 'ok' && dist(a, h) < a.r + h.r + 10);
+        if (helpers.length) h.thaw += dt; else h.thaw = Math.max(0, h.thaw - dt * 0.5);
+        if (h.thaw >= THAW_TIME) {
+          h.state = 'ok'; h.thaw = 0; G.stats.thaws++;
+          addFx(h.x, h.y - 32, '解凍!', '#7CFC9A'); burst(h.x, h.y, '#9bffc0', 12);
+          if (h.isPlayer) toast('解凍された！');
+          continue;
+        }
+        h.freezeTimer -= dt;
+        if (h.freezeTimer <= 0) eliminate(h, '脱落…');
+      } else if (h.state === 'ok') {
+        const tx = tileOf(h.x), ty = tileOf(h.y), idx = ty * MAP_W + tx, s = structs[ty][tx];
+        if (s && s.type === 'scaffold') {
+          if (h.scafTile === idx) h.scafTime += dt; else { h.scafTile = idx; h.scafTime = 0; }
+          if (h.scafTime >= SCAFFOLD_SAFE_TIME && s.crumble < 0) { s.crumble = SCAFFOLD_CRUMBLE_TIME; addFx(h.x, h.y - 30, '足場がグラグラ!', '#ffd34d'); }
+        } else { h.scafTile = -1; h.scafTime = 0; }
+      }
+    }
+    if (G.humans.every((h) => h.state === 'out')) { endGame('oni'); return; }
+  }
+
+  // --- 建物 ---
+  for (let ty = 0; ty < MAP_H; ty++) for (let tx = 0; tx < MAP_W; tx++) {
+    const s = structs[ty][tx]; if (!s) continue;
+    s.shake = Math.max(0, s.shake - dt);
+    if (s.crumble >= 0) {
+      s.crumble -= dt;
+      if (s.crumble <= 0) { structs[ty][tx] = null; const c = center({ tx, ty }); burst(c.x, c.y, '#b07a43', 14); }
+    }
+  }
+
+  // --- 演出 ---
+  for (const p of G.particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.92; p.vy *= 0.92; }
+  G.particles = G.particles.filter((p) => p.t < p.life);
+  for (const f of G.fx) f.t += dt;
+  G.fx = G.fx.filter((f) => f.t < 1.1);
+
+  // --- カメラ ---
+  let focus = G.player;
+  if (focus.kind === 'human' && focus.state === 'out') {
+    if (!G.spectate || G.spectate.state === 'out') G.spectate = G.humans.find((h) => h.state !== 'out') || focus;
+    focus = G.spectate;
+  }
+  const k = 1 - Math.pow(0.0005, dt);
+  G.camera.x += (focus.x - G.camera.x) * k; G.camera.y += (focus.y - G.camera.y) * k;
+}
+
+// =====================================================================
+// 描画
+// =====================================================================
+function draw(time) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#0d1320'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (!G || scene === 'title' || scene === 'side' || scene === 'oniType') return;
+
+  const s = worldScale, cam = G.camera;
+  const ox = cssW / 2 - cam.x * s, oy = cssH / 2 - cam.y * s;
+  ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
+  const vx0 = cam.x - cssW / 2 / s, vy0 = cam.y - cssH / 2 / s, vx1 = cam.x + cssW / 2 / s, vy1 = cam.y + cssH / 2 / s;
+
+  // 地面(画面外は暗い色)
+  ctx.fillStyle = '#2c3a2a'; ctx.fillRect(vx0 - 10, vy0 - 10, vx1 - vx0 + 20, vy1 - vy0 + 20);
+  ctx.drawImage(mapCanvas, 0, 0);
+
+  // 資材の雨エリア
+  if (G.rainArea) {
+    ctx.strokeStyle = 'rgba(255,220,80,.8)'; ctx.lineWidth = 4; ctx.setLineDash([14, 10]);
+    ctx.beginPath(); ctx.arc(G.rainArea.x, G.rainArea.y, G.rainArea.r, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // 建物
+  const tx0 = Math.max(0, tileOf(vx0) - 1), tx1 = Math.min(MAP_W - 1, tileOf(vx1) + 1);
+  const ty0 = Math.max(0, tileOf(vy0) - 1), ty1 = Math.min(MAP_H - 1, tileOf(vy1) + 1);
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+    const st = structs[ty][tx]; if (st) drawStruct(st, tx, ty, time);
+  }
+
+  // 力の実
+  for (const f of G.fruits) {
+    const by = Math.sin(f.bob) * 3;
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(f.x, f.y + 10, 9, 4, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#e8313b'; ctx.beginPath(); ctx.arc(f.x, f.y + by, 10, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ff8a8a'; ctx.beginPath(); ctx.arc(f.x - 3, f.y - 3 + by, 3, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#3bb54a'; ctx.beginPath(); ctx.ellipse(f.x + 4, f.y - 10 + by, 6, 3, -0.5, 0, TAU); ctx.fill();
+  }
+
+  // 箱
+  for (const b of G.boxes) drawBox(b, time);
+
+  // 資材
+  for (const it of G.items) {
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(it.x, it.y + 5, 6, 3, 0, 0, TAU); ctx.fill();
+    const y = it.y - it.z;
+    if (it.type === 'wood') {
+      ctx.save(); ctx.translate(it.x, y); ctx.rotate(0.5);
+      ctx.fillStyle = '#a8672f'; ctx.fillRect(-9, -4, 18, 8); ctx.fillStyle = '#e0a96d'; ctx.fillRect(6, -4, 3, 8);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = '#7d8691'; ctx.beginPath(); ctx.arc(it.x, y, 7, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#b9c1ca'; ctx.beginPath(); ctx.arc(it.x - 2, y - 2, 3, 0, TAU); ctx.fill();
+    }
+  }
+
+  // キャラ(下にいるほど手前)
+  const chars = [...G.humans.filter((h) => h.state !== 'out'), ...G.onis].sort((a, b) => a.y - b.y);
+  for (const c of chars) c.kind === 'human' ? drawHuman(c, time) : drawOni(c, time);
+
+  // 建築先プレビュー
+  const p = G.player;
+  if (p.kind === 'human' && p.state === 'ok') {
+    const t = frontTile(p), okPlace = canPlace(t.tx, t.ty, p.buildType);
+    ctx.strokeStyle = okPlace ? 'rgba(255,255,255,.75)' : 'rgba(255,90,90,.6)'; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+    ctx.strokeRect(t.tx * TILE + 3, t.ty * TILE + 3, TILE - 6, TILE - 6); ctx.setLineDash([]);
+  }
+
+  // パーティクル・文字
+  for (const pt of G.particles) {
+    ctx.globalAlpha = 1 - pt.t / pt.life; ctx.fillStyle = pt.color; ctx.fillRect(pt.x - pt.size / 2, pt.y - pt.size / 2, pt.size, pt.size);
+  }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const f of G.fx) {
+    ctx.globalAlpha = 1 - f.t / 1.1; ctx.font = 'bold 15px sans-serif';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.7)'; ctx.strokeText(f.text, f.x, f.y - f.t * 30);
+    ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y - f.t * 30);
+  }
+  ctx.globalAlpha = 1;
+
+  // 夜の暗闇
+  if (G.phase === 'night') drawDarkness(ox, oy, s);
+
+  // 頭上の凍結タイマーは暗闇の上に描く(見えている範囲のみ)
+  ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * ox, dpr * oy);
+  for (const h of G.humans) if (h.state === 'frozen' && isLit(h)) drawFreezeLabel(h);
+
+  // バーチャルスティック
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const base = input.joyId !== null ? input.base : { x: 90, y: cssH - 110 - safeBottom() };
+  const knob = input.joyId !== null ? input.pos : base;
+  ctx.globalAlpha = input.joyId !== null ? 0.9 : 0.4;
+  ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(base.x, base.y, JOY_R, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath(); ctx.arc(knob.x, knob.y, 24, 0, TAU); ctx.fill();
+  ctx.globalAlpha = 1;
+
+  drawMinimap(time);
+}
+function safeBottom() { return 0; }
+
+function drawStruct(st, tx, ty, time) {
+  let x = tx * TILE, y = ty * TILE;
+  if (st.shake > 0 || st.crumble >= 0) { x += rand(-2, 2); y += rand(-2, 2); }
+  ctx.globalAlpha = st.crumble >= 0 ? 0.35 + 0.65 * (st.crumble / SCAFFOLD_CRUMBLE_TIME) : 1;
+  if (st.type === 'scaffold') {
+    ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.fillRect(x + 4, y + 7, TILE - 4, TILE - 4);
+    ctx.fillStyle = '#8a5a2b'; ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+    ctx.fillStyle = '#c48a4f';
+    for (let i = 0; i < 3; i++) ctx.fillRect(x + 4, y + 4 + i * 11, TILE - 8, 8);
+    ctx.fillStyle = '#5e3b18'; ctx.fillRect(x + 2, y + 2, 4, TILE - 4); ctx.fillRect(x + TILE - 6, y + 2, 4, TILE - 4);
+    if (st.crumble >= 0) {
+      ctx.strokeStyle = '#2b1a0a'; ctx.lineWidth = 2; ctx.beginPath();
+      ctx.moveTo(x + 8, y + 6); ctx.lineTo(x + 18, y + 20); ctx.lineTo(x + 14, y + 33); ctx.moveTo(x + 18, y + 20); ctx.lineTo(x + 32, y + 24); ctx.stroke();
+    }
+  } else {
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(x + 3, y + 8, TILE - 2, TILE - 4);
+    ctx.fillStyle = '#5b6470'; ctx.fillRect(x, y - 6, TILE, TILE + 4);
+    ctx.fillStyle = '#88919c'; ctx.fillRect(x, y - 6, TILE, 10);
+    ctx.strokeStyle = '#46505b'; ctx.lineWidth = 2;
+    for (let r = 0; r < 3; r++) {
+      const yy = y + 4 + r * 10; ctx.beginPath(); ctx.moveTo(x, yy); ctx.lineTo(x + TILE, yy); ctx.stroke();
+      const off = r % 2 ? 10 : 20; ctx.beginPath(); ctx.moveTo(x + off, yy); ctx.lineTo(x + off, yy + 10); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+  if (st.hp < st.maxHp) {
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(x + 4, y - 12, TILE - 8, 5);
+    ctx.fillStyle = st.hp / st.maxHp > 0.4 ? '#7CFC9A' : '#ff6b6b'; ctx.fillRect(x + 4, y - 12, (TILE - 8) * (st.hp / st.maxHp), 5);
+  }
+}
+
+function drawBox(b, time) {
+  const w = b.big ? 46 : 22, h = b.big ? 34 : 18;
+  if (b.z > 0) {
+    const sc = clamp(1 - b.z / 1000, 0.3, 1);
+    ctx.fillStyle = `rgba(0,0,0,${0.25 * sc})`; ctx.beginPath(); ctx.ellipse(b.x, b.y + 6, w * 0.6 * sc, 6 * sc, 0, 0, TAU); ctx.fill();
+  } else {
+    ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(b.x, b.y + h / 2, w * 0.6, 6, 0, 0, TAU); ctx.fill();
+  }
+  const x = b.x - w / 2, y = b.y - h / 2 - b.z;
+  if (b.big) {
+    const glow = 0.5 + 0.5 * Math.sin(time / 200);
+    ctx.fillStyle = `rgba(255,220,80,${0.25 + 0.25 * glow})`; ctx.beginPath(); ctx.arc(b.x, b.y, 40, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#9c5b16'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#c47a23'; ctx.fillRect(x, y, w, h * 0.4);
+    ctx.fillStyle = '#ffd34d'; ctx.fillRect(x, y + h * 0.36, w, 5); ctx.fillRect(b.x - 5, y + h * 0.3, 10, 12);
+    ctx.strokeStyle = '#5a3208'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+  } else {
+    ctx.fillStyle = '#d08a3a'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#e9a85a'; ctx.fillRect(x, y, w, 5);
+    ctx.strokeStyle = '#7a4a17'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+    ctx.beginPath(); ctx.moveTo(b.x, y); ctx.lineTo(b.x, y + h); ctx.stroke();
+  }
+}
+
+function drawHuman(h, time) {
+  const up = onScaffold(h) ? 5 : 0; // 足場の上は少し高く
+  const x = h.x, y = h.y - up;
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(h.x, h.y + h.r * 0.7, h.r, h.r * 0.45, 0, 0, TAU); ctx.fill();
+  if (h.isPlayer) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, h.r + 4, 0, TAU); ctx.stroke(); }
+  ctx.fillStyle = h.state === 'frozen' ? '#a8e6ff' : h.color;
+  ctx.beginPath(); ctx.arc(x, y, h.r, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2; ctx.stroke();
+  // 向き
+  const fx = Math.cos(h.dir), fy = Math.sin(h.dir);
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(x + fx * 6 - fy * 4, y + fy * 6 + fx * 4, 3, 0, TAU); ctx.arc(x + fx * 6 + fy * 4, y + fy * 6 - fx * 4, 3, 0, TAU); ctx.fill();
+  // 叩くモーション
+  if (h.swing > 0) {
+    const a = h.dir + (h.swing / 0.25 - 0.5) * 2;
+    ctx.strokeStyle = '#ffe066'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * 12, y + Math.sin(a) * 12); ctx.lineTo(x + Math.cos(a) * 40, y + Math.sin(a) * 40); ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+  if (h.state === 'frozen') {
+    ctx.strokeStyle = '#e8fbff'; ctx.lineWidth = 2; ctx.fillStyle = 'rgba(180,235,255,.45)';
+    roundRect(ctx, x - h.r - 5, y - h.r - 7, h.r * 2 + 10, h.r * 2 + 12, 6); ctx.fill(); ctx.stroke();
+    if (h.thaw > 0) {
+      ctx.strokeStyle = '#7CFC9A'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(x, y, h.r + 10, -Math.PI / 2, -Math.PI / 2 + TAU * (h.thaw / THAW_TIME)); ctx.stroke();
+    }
+  }
+  // 凍結回数
+  for (let i = 0; i < MAX_FREEZE_COUNT; i++) {
+    ctx.fillStyle = i < h.freezeCount ? '#4dc3ff' : 'rgba(255,255,255,.35)';
+    ctx.beginPath(); ctx.arc(x - 8 + i * 8, y + h.r + 8, 2.6, 0, TAU); ctx.fill();
+  }
+  // 足場の残り時間
+  if (G.phase === 'night' && h.state === 'ok' && h.scafTile >= 0 && h.scafTime > 0) {
+    const r = clamp(1 - h.scafTime / SCAFFOLD_SAFE_TIME, 0, 1);
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x - 15, y - h.r - 12, 30, 4);
+    ctx.fillStyle = r > 0.35 ? '#ffd34d' : '#ff6b6b'; ctx.fillRect(x - 15, y - h.r - 12, 30 * r, 4);
+  }
+  if (h.isPlayer && h.state !== 'frozen') {
+    ctx.fillStyle = '#fff'; ctx.beginPath();
+    ctx.moveTo(x, y - h.r - 14); ctx.lineTo(x - 6, y - h.r - 22); ctx.lineTo(x + 6, y - h.r - 22); ctx.fill();
+  }
+}
+
+function drawFreezeLabel(h) {
+  const t = Math.ceil(h.freezeTimer);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = 'bold 16px sans-serif';
+  ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(0,0,0,.8)';
+  const label = `❄${t}`;
+  ctx.strokeText(label, h.x, h.y - h.r - 20); ctx.fillStyle = t <= 10 ? '#ff8787' : '#bdefff'; ctx.fillText(label, h.x, h.y - h.r - 20);
+}
+
+function drawOni(o, time) {
+  const x = o.x, y = o.y, r = o.r;
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(x, y + r * 0.7, r, r * 0.45, 0, 0, TAU); ctx.fill();
+  if (o.isPlayer) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r + 4, 0, TAU); ctx.stroke(); }
+  const fx = Math.cos(o.dir), fy = Math.sin(o.dir);
+  if (o.type === 'carnivore') {
+    // 耳
+    ctx.fillStyle = '#9a3d12';
+    for (const side of [-1, 1]) {
+      const ax = x + fx * 4 - fy * side * 10, ay = y + fy * 4 + fx * side * 10;
+      ctx.beginPath(); ctx.moveTo(ax - fy * side * 6, ay + fx * side * 6); ctx.lineTo(ax + fx * 14, ay + fy * 14); ctx.lineTo(ax - fx * 4, ay - fy * 4); ctx.fill();
+    }
+    ctx.fillStyle = '#e0702f';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#f5c39a'; ctx.beginPath(); ctx.arc(x + fx * 9, y + fy * 9, 7, 0, TAU); ctx.fill(); // 口元
+  } else {
+    ctx.fillStyle = '#7b2fa6';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#f1e6c8'; // 角
+    for (const side of [-1, 1]) {
+      const ax = x - fy * side * 12, ay = y + fx * side * 12;
+      ctx.beginPath(); ctx.moveTo(ax - 4, ay); ctx.lineTo(ax + 4, ay); ctx.lineTo(ax - fx * 2 - fy * side * 10, ay - fy * 2 + fx * side * 10 - 6); ctx.fill();
+    }
+    ctx.fillStyle = '#4a1766'; ctx.beginPath(); ctx.arc(x, y, r * 0.55, 0, TAU); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.stroke();
+  // 目
+  ctx.fillStyle = G.phase === 'night' ? '#fff35c' : '#fff';
+  ctx.beginPath(); ctx.arc(x + fx * r * 0.45 - fy * 5, y + fy * r * 0.45 + fx * 5, 3, 0, TAU);
+  ctx.arc(x + fx * r * 0.45 + fy * 5, y + fy * r * 0.45 - fx * 5, 3, 0, TAU); ctx.fill();
+  if (o.swing > 0) {
+    ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(x, y, r + 16, o.dir - 0.9, o.dir + 0.9); ctx.stroke();
+  }
+  // 力の実
+  for (let i = 0; i < o.fruits; i++) { ctx.fillStyle = '#ff4d4d'; ctx.beginPath(); ctx.arc(x - 8 + i * 8, y + r + 8, 3, 0, TAU); ctx.fill(); }
+  if (o.stun > 0) {
+    ctx.fillStyle = '#ffe066'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < 3; i++) { const a = time / 250 + (i * TAU) / 3; ctx.fillText('★', x + Math.cos(a) * 16, y - r - 6 + Math.sin(a) * 5); }
+  }
+}
+
+function lights() {
+  const L = [];
+  const p = G.player;
+  if (p.kind === 'human') {
+    for (const h of G.humans) if (h.state !== 'out') L.push({ x: h.x, y: h.y, r: h === p ? LIGHT_R : ALLY_LIGHT_R });
+    if (p.state === 'out' && G.spectate) L.push({ x: G.spectate.x, y: G.spectate.y, r: LIGHT_R });
+  } else {
+    for (const o of G.onis) L.push({ x: o.x, y: o.y, r: o === p ? LIGHT_R : ALLY_LIGHT_R });
+  }
+  return L;
+}
+function isLit(e) { return lights().some((l) => Math.hypot(l.x - e.x, l.y - e.y) < l.r * 0.9); }
+
+function drawDarkness(ox, oy, s) {
+  dctx.setTransform(1, 0, 0, 1, 0, 0);
+  dctx.globalCompositeOperation = 'source-over';
+  dctx.clearRect(0, 0, darkCanvas.width, darkCanvas.height);
+  dctx.fillStyle = 'rgba(4,8,22,0.93)'; dctx.fillRect(0, 0, darkCanvas.width, darkCanvas.height);
+  dctx.globalCompositeOperation = 'destination-out';
+  for (const l of lights()) {
+    const sx = (l.x * s + ox) * dpr, sy = (l.y * s + oy) * dpr, r = l.r * s * dpr;
+    const g = dctx.createRadialGradient(sx, sy, r * 0.35, sx, sy, r);
+    g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    dctx.fillStyle = g; dctx.beginPath(); dctx.arc(sx, sy, r, 0, TAU); dctx.fill();
+  }
+  dctx.globalCompositeOperation = 'source-over';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(darkCanvas, 0, 0);
+}
+
+function drawMinimap(time) {
+  const W = mini.width, sc = W / (MAP_W * TILE);
+  mctx.setTransform(1, 0, 0, 1, 0, 0);
+  mctx.drawImage(mapCanvas, 0, 0, W, W);
+  if (G.phase === 'night') { mctx.fillStyle = 'rgba(5,10,30,.6)'; mctx.fillRect(0, 0, W, W); }
+  const ts = TILE * sc;
+  for (let ty = 0; ty < MAP_H; ty++) for (let tx = 0; tx < MAP_W; tx++) {
+    const st = structs[ty][tx]; if (!st) continue;
+    mctx.fillStyle = st.type === 'wall' ? '#d0d6de' : '#b8742f'; mctx.fillRect(tx * ts, ty * ts, ts, ts);
+  }
+  const dot = (x, y, r, c) => { mctx.fillStyle = c; mctx.beginPath(); mctx.arc(x * sc, y * sc, r, 0, TAU); mctx.fill(); };
+  const u = W / 112;
+  if (G.phase === 'day') {
+    for (const b of G.boxes) if (!b.big) dot(b.x, b.y, 1.4 * u, '#e9a85a');
+    for (const f of G.fruits) if (G.player.kind === 'oni') dot(f.x, f.y, 1.8 * u, '#ff4d4d');
+  }
+  if (G.chest && Math.sin(time / 150) > -0.3) dot(G.chest.x, G.chest.y, 4 * u, '#ffd34d');
+  if (G.rainArea) { mctx.strokeStyle = '#ffd34d'; mctx.lineWidth = 1.5 * u; mctx.beginPath(); mctx.arc(G.rainArea.x * sc, G.rainArea.y * sc, G.rainArea.r * sc, 0, TAU); mctx.stroke(); }
+  const showHumans = G.phase === 'day' || G.player.kind === 'human';
+  const showOnis = G.phase === 'day' || G.player.kind === 'oni';
+  if (showHumans) for (const h of G.humans) if (h.state !== 'out') dot(h.x, h.y, (h.isPlayer ? 3.2 : 2.3) * u, h.state === 'frozen' ? '#bdefff' : h.isPlayer ? '#fff' : '#4d9bff');
+  if (showOnis) for (const o of G.onis) dot(o.x, o.y, (o.isPlayer ? 3.4 : 2.8) * u, o.isPlayer ? '#fff' : '#ff4d4d');
+  if (G.player.kind === 'oni') dot(G.player.x, G.player.y, 2 * u, '#ff4d4d');
+  // 画面に映っている範囲
+  const vw = cssW / worldScale, vh = cssH / worldScale;
+  mctx.strokeStyle = 'rgba(255,255,255,.7)'; mctx.lineWidth = 1 * u;
+  mctx.strokeRect((G.camera.x - vw / 2) * sc, (G.camera.y - vh / 2) * sc, vw * sc, vh * sc);
+}
+
+// =====================================================================
+// HUD
+// =====================================================================
+function setupHUD(hide) {
+  const show = !hide && playing();
+  $('hud').style.display = show ? 'block' : 'none';
+  $('minimap').style.display = show ? 'block' : 'none';
+  $('buttons').style.display = show ? 'block' : 'none';
+  if (!show) return;
+  const human = G.player.kind === 'human';
+  ['btnPick', 'btnBuild', 'btnHit'].forEach((id) => ($(id).style.display = human ? 'flex' : 'none'));
+  $('btnAttack').style.display = human ? 'none' : 'flex';
+}
+function updateHUD() {
+  if (!playing()) return;
+  const night = G.phase === 'night';
+  const ph = $('phase'); ph.textContent = night ? '🌙 夜' : '☀ 昼'; ph.className = 'pill ' + (night ? 'night' : 'day');
+  $('timer').textContent = fmtTime(G.timeLeft);
+  const alive = G.humans.filter((h) => h.state !== 'out').length;
+  $('alive').textContent = `人 ${alive}/${HUMAN_COUNT}`;
+  const p = G.player;
+  let html;
+  if (p.kind === 'human') {
+    const bt = p.buildType === 'scaffold' ? `足場(木${COST.scaffold.wood})` : `壁(石${COST.wall.stone})`;
+    const st = p.state === 'out' ? '<span style="color:#ff8787">脱落・観戦中</span>'
+             : p.state === 'frozen' ? `<span style="color:#9be7ff">凍結中 ❄${Math.ceil(p.freezeTimer)}</span>` : '';
+    html = `<div class="row"><span class="wood">🪵 木材 ${p.wood}</span><span class="stone">🪨 石 ${p.stone}</span></div>
+            <div class="row"><span>建築: ${bt}</span></div>
+            <div class="row"><span style="font-size:12px">スタミナ</span><div id="stamina"><div style="width:${(p.stamina / STAMINA_MAX) * 100}%"></div></div></div>
+            <div class="row" style="font-size:12px;color:#c8d3e6">凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>`;
+    $('buildLabel').textContent = p.buildType === 'scaffold' ? '足場' : '壁';
+  } else {
+    const dots = '●'.repeat(p.fruits) + '○'.repeat(MAX_FRUITS - p.fruits);
+    html = `<div class="row"><span>${p.type === 'carnivore' ? '🐺 肉食動物' : '👹 モンスター'}</span></div>
+            <div class="row"><span>力の実 <span class="fruit">${dots}</span></span></div>
+            <div class="row" style="font-size:12px;color:#c8d3e6">夜の速さ +${Math.round(p.fruits * FRUIT_BONUS * 100)}%</div>`;
+  }
+  const status = $('status');
+  if (status._html !== html) { status.innerHTML = html; status._html = html; }
+}
+
+// =====================================================================
+// 画面(タイトル・陣営選択・鬼の種類選択)
+// =====================================================================
+function showScreen(html) {
+  const el = $('screen');
+  if (html === null) { el.className = 'hidden'; el.innerHTML = ''; return; }
+  el.className = ''; el.innerHTML = html;
+}
+function showTitle() {
+  scene = 'title'; setupHUD(true);
+  showScreen(`
+    <h1>建築<br>鬼ごっこ</h1>
+    <p>昼に資材を集めて建てて、夜は鬼から逃げ切れ！<br>高鬼 × 氷鬼 × 建築</p>
+    <p class="tap">タップしてスタート</p>
+  `);
+  $('screen').dataset.act = 'toSide';
+}
+function showSide() {
+  scene = 'side';
+  showScreen(`
+    <h2>陣営をえらぶ</h2>
+    <button class="choice c-human" data-act="human">🧑 人<span>資材を集めて足場や壁を建てる。<br>夜が明けるまで1人でも生き残れば勝ち</span></button>
+    <button class="choice c-oni" data-act="oni">👹 鬼<span>夜に人をタッチして凍らせる。<br>全員を脱落させれば勝ち</span></button>
+  `);
+  $('screen').dataset.act = '';
+}
+function showOniType() {
+  scene = 'oniType';
+  showScreen(`
+    <h2>鬼の種類をえらぶ</h2>
+    <button class="choice c-carn" data-act="carnivore">🐺 肉食動物<span>足が速い。建物への攻撃は弱い。<br>足場の上の人にはタッチできない</span></button>
+    <button class="choice c-mons" data-act="monster">👹 モンスター<span>足は遅い。壁・足場を1〜2回で壊す。<br>足場の上の人にもタッチできる</span></button>
+    <button class="choice c-plain" data-act="back">← もどる</button>
+  `);
+  $('screen').dataset.act = '';
+}
+$('screen').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-act]');
+  const act = btn ? btn.dataset.act : '';
+  if (scene === 'title') { tryFullscreen(); showSide(); return; }
+  if (act === 'human') { playerSide = 'human'; startGame(); }
+  else if (act === 'oni') { playerSide = 'oni'; showOniType(); }
+  else if (act === 'carnivore' || act === 'monster') { playerOniType = act; startGame(); }
+  else if (act === 'back') showSide();
+  else if (act === 'again') showSide();
+  else if (act === 'title') showTitle();
+});
+function tryFullscreen() {
+  const el = document.documentElement;
+  try {
+    const p = el.requestFullscreen && el.requestFullscreen({ navigationUI: 'hide' });
+    if (p && p.then) p.then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('portrait').catch(() => {})).catch(() => {});
+  } catch (_) {}
+}
+
+// =====================================================================
+// メインループ
+// =====================================================================
+let lastT = performance.now();
+function frame(t) {
+  const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
+  try {
+    update(dt);
+    updateHUD();
+    draw(t);
+  } catch (err) { console.error(err); }
+  requestAnimationFrame(frame);
+}
+showTitle();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
