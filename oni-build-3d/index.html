@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0d1320">
+<meta name="mobile-web-app-capable" content="yes">
+<title>建築鬼ごっこ 3D</title>
+<style>
+  :root { --ui-bg: rgba(10, 16, 28, 0.66); }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #0d1320; color: #fff;
+    touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    font-family: system-ui, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+  }
+  #view, #view canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /* ---------- HUD ---------- */
+  .hud { display: none; pointer-events: none; }
+  #topbar { position: fixed; top: calc(env(safe-area-inset-top) + 6px); left: 50%; transform: translateX(-50%);
+            display: flex; gap: 6px; }
+  .pill { background: var(--ui-bg); border-radius: 999px; padding: 4px 12px; font-weight: 800; font-size: 15px; white-space: nowrap;
+          border: 1px solid rgba(255,255,255,.14); }
+  #phase.day { color: #ffe27a; } #phase.night { color: #9fc4ff; }
+  #timer { font-variant-numeric: tabular-nums; min-width: 46px; text-align: center; }
+  #status { position: fixed; top: calc(env(safe-area-inset-top) + 6px); left: calc(env(safe-area-inset-left) + 8px);
+            background: var(--ui-bg); border-radius: 12px; padding: 7px 10px; font-size: 13px; font-weight: 700;
+            border: 1px solid rgba(255,255,255,.14); display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+  #status .row { display: flex; gap: 10px; align-items: center; }
+  .wood { color: #e9b37a; } .stone { color: #d3dae3; } .fruit { color: #ff6b6b; letter-spacing: 2px; }
+  .bar { width: 100px; height: 7px; background: rgba(255,255,255,.15); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; background: linear-gradient(90deg, #4ee08a, #b8f56b); }
+  #minimap { position: fixed; top: calc(env(safe-area-inset-top) + 6px); right: calc(env(safe-area-inset-right) + 8px);
+             width: 120px; height: 120px; border-radius: 10px; border: 2px solid rgba(255,255,255,.35); background: #000; }
+
+  #telop { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 46px); transform: translateX(-50%);
+           background: linear-gradient(90deg, rgba(190,40,40,0), rgba(190,40,40,.92) 15%, rgba(190,40,40,.92) 85%, rgba(190,40,40,0));
+           font-weight: 800; font-size: 17px; padding: 7px 44px; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .3s;
+           text-shadow: 0 2px 3px rgba(0,0,0,.5); }
+  #telop.show { opacity: 1; }
+  #telop.blue { background: linear-gradient(90deg, rgba(40,70,170,0), rgba(40,70,170,.92) 15%, rgba(40,70,170,.92) 85%, rgba(40,70,170,0)); }
+  #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 18px); transform: translateX(-50%);
+           background: rgba(0,0,0,.7); padding: 6px 14px; border-radius: 8px; font-size: 14px; font-weight: 700;
+           opacity: 0; transition: opacity .2s; pointer-events: none; white-space: nowrap; }
+  #toast.show { opacity: 1; }
+
+  #labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  .lbl { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%); font-weight: 900; font-size: 15px; white-space: nowrap;
+         text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px #000; text-align: center; }
+  .lbl .tb { width: 40px; height: 5px; background: rgba(0,0,0,.6); border-radius: 3px; margin: 2px auto 0; overflow: hidden; }
+  .lbl .tb > div { height: 100%; background: #7CFC9A; }
+
+  /* ---------- スティック・ボタン ---------- */
+  #joy { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%;
+         background: rgba(255,255,255,.12); border: 3px solid rgba(255,255,255,.45); pointer-events: none; opacity: .5; }
+  #joy.active { opacity: .95; }
+  #knob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%;
+          background: rgba(255,255,255,.75); }
+  #buttons { position: fixed; right: calc(env(safe-area-inset-right) + 14px); bottom: calc(env(safe-area-inset-bottom) + 14px);
+             width: 236px; height: 176px; }
+  .btn { position: absolute; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+         font-weight: 800; color: #fff; border: 3px solid rgba(255,255,255,.55); box-shadow: 0 4px 10px rgba(0,0,0,.4);
+         touch-action: none; text-shadow: 0 1px 2px rgba(0,0,0,.6); pointer-events: auto; font-size: 15px; }
+  .btn small { font-size: 10px; opacity: .92; }
+  .btn.pressed { transform: scale(.92); filter: brightness(1.25); }
+  .btn.on { box-shadow: 0 0 0 4px #ffd34d, 0 4px 10px rgba(0,0,0,.4); }
+  #bHit    { width: 86px; height: 86px; right: 0; bottom: 0; background: #c43c3c; font-size: 17px; }
+  #bJump   { width: 72px; height: 72px; right: 98px; bottom: 0; background: #2d7dd2; }
+  #bBuild  { width: 72px; height: 72px; right: 4px; bottom: 98px; background: #b06d2c; }
+  #bPick   { width: 66px; height: 66px; right: 98px; bottom: 86px; background: #2f9a5b; }
+  #bAttack { width: 100px; height: 100px; right: 0; bottom: 0; background: #8d2bb3; font-size: 17px; }
+  #buttons.oni #bJump { right: 112px; }
+  #bBuild .ring { position: absolute; inset: -7px; border-radius: 50%; border: 4px solid transparent; }
+
+  /* ---------- 画面 ---------- */
+  #screen { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 12px; padding: 16px; box-sizing: border-box; text-align: center;
+            background: radial-gradient(ellipse at 50% 30%, #2b3d5c 0%, #121a2a 75%); z-index: 10; }
+  #screen.hidden { display: none; }
+  #screen h1 { font-size: 44px; margin: 0; line-height: 1.1; letter-spacing: 2px; color: #ffd34d;
+               text-shadow: 0 4px 0 #b3471f, 0 8px 18px rgba(0,0,0,.5); }
+  #screen h1 small { display: block; font-size: 20px; letter-spacing: 6px; color: #fff; text-shadow: none; margin-top: 6px; }
+  #screen h2 { margin: 0; font-size: 22px; }
+  #screen p { margin: 0; color: #c8d3e6; font-size: 14px; line-height: 1.6; }
+  .row2 { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+  .choice { width: min(280px, 42vw); padding: 14px 12px; border-radius: 16px; border: 3px solid rgba(255,255,255,.35);
+            font-size: 22px; font-weight: 800; color: #fff; display: flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; font-family: inherit; }
+  .choice span { font-size: 12px; font-weight: 600; opacity: .92; line-height: 1.5; }
+  .choice:active { transform: scale(.97); }
+  .c-human { background: linear-gradient(160deg, #3b7de0, #2554a8); }
+  .c-oni   { background: linear-gradient(160deg, #d9483b, #962a20); }
+  .c-carn  { background: linear-gradient(160deg, #e0832f, #a3521a); }
+  .c-mons  { background: linear-gradient(160deg, #9b46c9, #5f2486); }
+  .c-plain { background: linear-gradient(160deg, #3a4a66, #263247); font-size: 16px; padding: 10px; }
+  .tap { animation: blink 1.2s infinite; font-weight: 800; font-size: 18px; color: #fff !important; margin-top: 10px !important; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .result-big { font-size: 34px; font-weight: 900; } .win { color: #ffd34d; } .lose { color: #8fa3c4; }
+  .stats { background: rgba(0,0,0,.3); border-radius: 12px; padding: 8px 18px; font-size: 14px; line-height: 1.7; }
+  #rotate { position: fixed; inset: 0; z-index: 50; background: #0d1320; display: none; flex-direction: column; align-items: center;
+            justify-content: center; gap: 14px; font-size: 22px; font-weight: 800; text-align: center; }
+  #rotate .icon { font-size: 64px; animation: rot 1.6s ease-in-out infinite; }
+  @keyframes rot { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+  #loadErr { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; text-align: center; z-index: 60; background: #0d1320; }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div id="labels"></div>
+
+<div id="topbar" class="hud">
+  <div class="pill" id="phase">☀ 昼</div>
+  <div class="pill" id="timer">1:30</div>
+  <div class="pill" id="alive">人 6/6</div>
+</div>
+<div id="status" class="hud"></div>
+<canvas id="minimap" class="hud"></canvas>
+<div id="telop"></div>
+<div id="toast"></div>
+
+<div id="joy" class="hud"><div id="knob"></div></div>
+<div id="buttons" class="hud">
+  <div class="btn" id="bPick">拾う</div>
+  <div class="btn" id="bBuild">建てる<small id="buildLabel">足場</small><div class="ring" id="buildRing"></div></div>
+  <div class="btn" id="bJump">ジャンプ</div>
+  <div class="btn" id="bHit">叩く</div>
+  <div class="btn" id="bAttack">攻撃<small>タッチ/破壊</small></div>
+</div>
+
+<div id="screen"></div>
+<div id="rotate"><div class="icon">📱</div>スマホを横にしてください</div>
+<div id="loadErr">3D描画ライブラリ(Three.js)を読み込めませんでした。<br>インターネット接続を確認して再読み込みしてください。</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+
+// =====================================================================
+// 調整用の定数
+// =====================================================================
+const DAY_TIME = 90;          // 昼フェーズの長さ(秒)
+const NIGHT_TIME = 120;       // 夜フェーズの長さ(秒)
+const FREEZE_LIMIT = 30;      // 凍結してから脱落するまでの秒数
+const MAX_FREEZE_COUNT = 3;   // この回数凍結した人は、次のタッチで即脱落
+const HUMAN_COUNT = 6;        // 人の数
+const ONI_COUNT = 2;          // 鬼の数
+const FIELD_SIZE = 60;        // フィールドの大きさ(マス)
+
+// ---- 資材(多め) ----
+const BOX_COUNT = 130;        // 最初に置かれる箱の数
+const BOX_ITEMS = 5;          // 箱1つから出る資材の数
+const CHEST_ITEMS = 50;       // 巨大宝箱から出る資材の数
+const RAIN_BOXES = 26;        // 資材の雨で降る箱の数
+const START_WOOD = 4, START_STONE = 3;
+const EVENT_INTERVAL = 30;    // 昼のランダムイベントの間隔(秒)
+
+// ---- 建築 ----
+const PARTS = {
+  scaffold: { name: '足場', wood: 2, stone: 0, h: 1, hp: 4 },
+  wall:     { name: '壁',   wood: 0, stone: 3, h: 2, hp: 8 },
+};
+const PART_ORDER = ['scaffold', 'wall'];
+const MAX_STACK = 8;                 // 積める高さの上限
+const SCAFFOLD_SAFE_TIME = 5;        // 同じ足場にこの秒数いると揺れ始める
+const SCAFFOLD_CRUMBLE_TIME = 2;     // 揺れ始めてから崩れるまで
+const BUILD_MODE_TIMEOUT = 6;        // 建築プレビューが消えるまでの秒数
+const LONG_PRESS = 0.45;             // 長押し判定(秒)
+
+// ---- キャラ ----
+const GRAVITY = 22;
+const HUMAN_SPEED = 4.2, HUMAN_JUMP = 1.3;  // ジャンプの高さ1.3 → 1段だけ登れる
+const HUMAN_R = 0.3, HUMAN_H = 1.6;
+const ONI = {
+  carnivore: { name: '🐺 肉食動物', speed: 4.9, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
+  monster:   { name: '👹 モンスター', speed: 3.2, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
+};
+const HIGH_Y = 0.5;                  // この高さ以上が「高い場所」(高鬼のセーフ)
+const MONSTER_REACH = 1.05;          // モンスターがタッチできる高さ
+const FRUIT_BONUS = 0.08, MAX_FRUITS = 3, FRUIT_COUNT = 10;
+const THAW_TIME = 2, HIT_STUN = 2, HIT_COST = 35, STAMINA_MAX = 100, STAMINA_REGEN = 12, HIT_RANGE = 1.5;
+const ONI_ATTACK_RANGE = 1.3, ONI_ATTACK_CD = 0.6;
+
+// ---- 表示 ----
+const CAM_DIST = 7.5, CAM_HEIGHT = 4.2, CAM_ROT_SPEED = 0.007;
+const MAX_LANTERN_LIGHTS = 3;        // 実際に光らせるランタンの数(軽さ優先)
+const SKY_DAY = 0x9ed6ff, SKY_NIGHT = 0x05070f;
+const FOG_DAY = [35, 85], FOG_NIGHT = [4, 19];
+
+const N = FIELD_SIZE, TAU = Math.PI * 2;
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const HUMAN_COLORS = [0x3d8bfd, 0x20c997, 0xffc233, 0xf783ac, 0x9775fa, 0x66d9e8, 0xff922b, 0x94d82d];
+const ONI_SPAWNS = [[3, 3], [N - 4, N - 4], [N - 4, 3], [3, N - 4]];
+
+// =====================================================================
+// ユーティリティ
+// =====================================================================
+const rand = (a, b) => a + Math.random() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const hdist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const dir2 = (x, z) => { const l = Math.hypot(x, z); return l > 1e-6 ? { x: x / l, z: z / l } : { x: 0, z: 0 }; };
+const fmtTime = (t) => { t = Math.max(0, Math.ceil(t)); return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0'); };
+const $ = (id) => document.getElementById(id);
+const idx = (x, z) => z * N + x;
+const inField = (x, z) => x >= 0 && z >= 0 && x < N && z < N;
+const cellOf = (e) => idx(Math.floor(e.x), Math.floor(e.z));
+const cX = (i) => (i % N) + 0.5, cZ = (i) => ((i / N) | 0) + 0.5;
+function nearest(list, p, filter) {
+  let best = null, bd = Infinity;
+  for (const e of list) { if (filter && !filter(e)) continue; const d = hdist(e, p); if (d < bd) { bd = d; best = e; } }
+  return best;
+}
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = randInt(0, i); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+if (typeof THREE === 'undefined') { $('loadErr').style.display = 'flex'; throw new Error('THREE not loaded'); }
+
+// =====================================================================
+// フィールド(グリッド)
+// =====================================================================
+// obst: 0=なし 1=柵 2=岩 3=木 4=小屋   cols: 各マスに積まれたブロック   heights: 各マスの高さ
+const OB_FENCE = 1, OB_ROCK = 2, OB_TREE = 3, OB_HUT = 4;
+let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), cols = [], huts = [];
+
+function genField() {
+  obst = new Uint8Array(N * N); heights = new Float32Array(N * N); cols = []; huts = [];
+  for (let i = 0; i < N * N; i++) cols.push([]);
+  for (let i = 0; i < N; i++) { obst[idx(i, 0)] = obst[idx(i, N - 1)] = obst[idx(0, i)] = obst[idx(N - 1, i)] = OB_FENCE; }
+  const c = N >> 1;
+  const reserved = (x, z) => (Math.abs(x - c) <= 5 && Math.abs(z - c) <= 5) || ONI_SPAWNS.some(([sx, sz]) => Math.abs(sx - x) <= 2 && Math.abs(sz - z) <= 2);
+  // 小屋(3×3)
+  for (let tries = 0; huts.length < 5 && tries < 200; tries++) {
+    const x = randInt(3, N - 6), z = randInt(3, N - 6);
+    let ok = true;
+    for (let dz = -1; dz <= 3 && ok; dz++) for (let dx = -1; dx <= 3 && ok; dx++) if (obst[idx(x + dx, z + dz)] || reserved(x + dx, z + dz)) ok = false;
+    if (!ok) continue;
+    for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) obst[idx(x + dx, z + dz)] = OB_HUT;
+    huts.push({ x, z, rot: randInt(0, 3) });
+  }
+  // 岩の固まり
+  for (let i = 0; i < 55; i++) {
+    let x = randInt(2, N - 3), z = randInt(2, N - 3);
+    for (let k = 0, n = randInt(1, 4); k < n; k++) {
+      if (!reserved(x, z) && !obst[idx(x, z)] && x > 0 && z > 0 && x < N - 1 && z < N - 1) obst[idx(x, z)] = OB_ROCK;
+      const d = DIRS4[randInt(0, 3)]; x += d[0]; z += d[1];
+    }
+  }
+  // 木
+  for (let i = 0; i < 110; i++) {
+    const x = randInt(1, N - 2), z = randInt(1, N - 2);
+    if (!reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_TREE;
+  }
+  // 中央から行けない場所は岩で埋める
+  const seen = new Uint8Array(N * N), q = [idx(c, c)]; seen[q[0]] = 1;
+  while (q.length) {
+    const i = q.pop(), x = i % N, z = (i / N) | 0;
+    for (const [dx, dz] of DIRS4) { const j = idx(x + dx, z + dz); if (!obst[j] && !seen[j]) { seen[j] = 1; q.push(j); } }
+  }
+  for (let i = 0; i < N * N; i++) if (!obst[i] && !seen[i]) obst[i] = OB_ROCK;
+}
+
+const cellTopI = (i) => (obst[i] ? Infinity : heights[i]);
+function cellTop(x, z) { const fx = Math.floor(x), fz = Math.floor(z); return inField(fx, fz) ? cellTopI(idx(fx, fz)) : Infinity; }
+// 足元の矩形が重なるマスを列挙
+function forCells(x, z, r, fn) {
+  const x0 = Math.floor(x - r), x1 = Math.floor(x + r - 1e-6), z0 = Math.floor(z - r), z1 = Math.floor(z + r - 1e-6);
+  for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) fn(inField(cx, cz) ? idx(cx, cz) : -1);
+}
+function blockedTop(x, z, r, y) {
+  let m = -Infinity;
+  forCells(x, z, r, (i) => { const t = i < 0 ? Infinity : cellTopI(i); if (t > y + 0.02) m = Math.max(m, t); });
+  return m;
+}
+function groundAt(x, z, r) {
+  let m = 0;
+  forCells(x, z, r, (i) => { if (i >= 0 && !obst[i]) m = Math.max(m, heights[i]); });
+  return m;
+}
+function randomFreeCell(margin = 1, test) {
+  for (let t = 0; t < 1000; t++) {
+    const x = randInt(margin, N - 1 - margin), z = randInt(margin, N - 1 - margin), i = idx(x, z);
+    if (!obst[i] && heights[i] === 0 && (!test || test(x, z))) return i;
+  }
+  return idx(N >> 1, N >> 1);
+}
+
+// ---------------------------------------------------------------------
+// 経路探索(BFS)。maxUp=登れる段差、breakBlocks=ブロックを壊して進む前提
+// ---------------------------------------------------------------------
+const bPrev = new Int32Array(N * N), bQ = new Int32Array(N * N), bDepth = new Int16Array(N * N);
+function bfs(start, o) {
+  bPrev.fill(-1);
+  const H = (i) => (obst[i] ? Infinity : o.breakBlocks ? 0 : heights[i]);
+  const maxUp = (o.maxUp || 0) + 0.01, maxD = o.maxDepth || 9999;
+  let head = 0, tail = 0; bQ[tail++] = start; bPrev[start] = start; bDepth[start] = 0;
+  while (head < tail) {
+    const c = bQ[head++];
+    if ((o.goal !== undefined && c === o.goal) || (o.pred && o.pred(c))) {
+      if (c === start) return { goal: c, next: c };
+      let n = c; while (bPrev[n] !== start) n = bPrev[n];
+      return { goal: c, next: n };
+    }
+    if (bDepth[c] >= maxD) continue;
+    const x = c % N, z = (c / N) | 0, hc = H(c);
+    for (const [dx, dz] of DIRS4) {
+      const nx = x + dx, nz = z + dz;
+      if (!inField(nx, nz)) continue;
+      const ni = idx(nx, nz);
+      if (bPrev[ni] !== -1) continue;
+      const hn = H(ni);
+      if (hn === Infinity || hn - hc > maxUp) continue;
+      bPrev[ni] = c; bDepth[ni] = bDepth[c] + 1; bQ[tail++] = ni;
+    }
+  }
+  return null;
+}
+// 地点へ向かう方向(経路は0.3秒ごとに再計算)
+function seekPoint(e, tx, tz, maxUp, allowBreak) {
+  const ai = e.ai, s = cellOf(e), g = idx(clamp(Math.floor(tx), 0, N - 1), clamp(Math.floor(tz), 0, N - 1));
+  if (s === g) return dir2(tx - e.x, tz - e.z);
+  if (ai.pathT <= 0 || ai.pFrom !== s || ai.pGoal !== g) {
+    ai.pathT = 0.3; ai.pFrom = s; ai.pGoal = g; ai.pBreak = false;
+    let r = bfs(s, { maxUp, goal: g });
+    if (!r && allowBreak) { r = bfs(s, { maxUp, goal: g, breakBlocks: true }); ai.pBreak = !!r; }
+    ai.pNext = r ? r.next : -1;
+  }
+  if (ai.pNext < 0 || ai.pNext === g) return dir2(tx - e.x, tz - e.z);
+  return dir2(cX(ai.pNext) - e.x, cZ(ai.pNext) - e.z);
+}
+// 条件に合う一番近いマスへ向かう
+function seekPred(e, key, pred, maxUp, maxDepth) {
+  const ai = e.ai, s = cellOf(e);
+  if (ai.qT <= 0 || ai.qKey !== key || ai.qFrom !== s) {
+    ai.qT = 0.4; ai.qKey = key; ai.qFrom = s;
+    ai.q = bfs(s, { maxUp, pred, maxDepth });
+  }
+  if (!ai.q) return null;
+  const n = ai.q.next;
+  return { dir: dir2(cX(n) - e.x, cZ(n) - e.z), goal: ai.q.goal };
+}
+
+// =====================================================================
+// Three.js 準備
+// =====================================================================
+let renderer, scene, camera, hemi, sun, world, lanternLights = [];
+const GEO = {}, MAT = {};
+const _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _c = new THREE.Color(), _e = new THREE.Euler();
+
+function makeCanvasTex(size, draw) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  draw(cv.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(cv); t.anisotropy = 4; return t;
+}
+const lam = (color, extra) => new THREE.MeshLambertMaterial(Object.assign({ color }, extra || {}));
+const basic = (color, extra) => new THREE.MeshBasicMaterial(Object.assign({ color }, extra || {}));
+
+function init3D() {
+  renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.shadowMap.enabled = false;
+  $('view').appendChild(renderer.domElement);
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(SKY_DAY);
+  scene.fog = new THREE.Fog(SKY_DAY, FOG_DAY[0], FOG_DAY[1]);
+  camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 160);
+  hemi = new THREE.HemisphereLight(0xe4f3ff, 0x5a7a4a, 0.9); scene.add(hemi);
+  sun = new THREE.DirectionalLight(0xffffff, 0.7); sun.position.set(20, 40, 12); scene.add(sun);
+  for (let i = 0; i < MAX_LANTERN_LIGHTS; i++) { // 数を固定して、シェーダの作り直しを防ぐ
+    const l = new THREE.PointLight(0xffb45c, 0, 11, 1.2); scene.add(l); lanternLights.push(l);
+  }
+  // 共有ジオメトリ
+  GEO.box1 = new THREE.BoxGeometry(1, 1, 1);
+  GEO.box2 = new THREE.BoxGeometry(1, 2, 1);
+  GEO.body = new THREE.CylinderGeometry(0.26, 0.3, 0.8, 8);
+  GEO.head = new THREE.SphereGeometry(0.26, 10, 8);
+  GEO.small = new THREE.BoxGeometry(1, 1, 1);
+  GEO.sphere = new THREE.SphereGeometry(1, 8, 6);
+  GEO.lantern = new THREE.SphereGeometry(0.1, 8, 6);
+  GEO.ice = new THREE.BoxGeometry(0.95, 1.85, 0.95);
+  GEO.cone = new THREE.ConeGeometry(1, 1, 6);
+  GEO.star = new THREE.OctahedronGeometry(0.12);
+  GEO.crate = new THREE.BoxGeometry(0.62, 0.5, 0.62);
+  GEO.wood = new THREE.BoxGeometry(0.5, 0.14, 0.16);
+  GEO.stone = new THREE.IcosahedronGeometry(0.17, 0);
+  GEO.part = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+  GEO.fruit = new THREE.SphereGeometry(0.22, 10, 8);
+  // 共有マテリアル
+  MAT.skin = lam(0xffd7b0); MAT.dark = lam(0x2b2b33); MAT.white = basic(0xffffff);
+  MAT.lantern = basic(0xffd27a); MAT.eye = basic(0xff2a2a, { fog: false });
+  MAT.ice = lam(0x9be7ff, { transparent: true, opacity: 0.55, emissive: 0x2a6f8f, depthWrite: false });
+  MAT.star = basic(0xffe066);
+  MAT.carn = lam(0xb5652b); MAT.carnDark = lam(0x6e3814); MAT.carnLight = lam(0xf0c79c);
+  MAT.mons = lam(0x6b2fa0); MAT.monsDark = lam(0x3f1866); MAT.horn = lam(0xf1e6c8);
+  MAT.crate = lam(0xd08a3a); MAT.gold = lam(0xffc533, { emissive: 0x553300 }); MAT.chest = lam(0x8a4f14);
+  MAT.wood = lam(0xa8672f); MAT.stone = lam(0x8d96a0);
+  MAT.fruit = lam(0xe8313b, { emissive: 0x330000 }); MAT.leaf = lam(0x3bb54a);
+  MAT.preview = basic(0x7CFC9A, { transparent: true, opacity: 0.42, depthWrite: false });
+  MAT.beam = basic(0xffe066, { transparent: true, opacity: 0.25, depthWrite: false, side: THREE.DoubleSide });
+  MAT.ring = basic(0xffd34d, { transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false });
+  MAT.part = basic(0xffffff);
+  MAT.scaffold = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
+    c.fillStyle = '#8a5a2b'; c.fillRect(0, 0, s, s);
+    for (let i = 0; i < 4; i++) { c.fillStyle = i % 2 ? '#c48a4f' : '#b57a40'; c.fillRect(3, 3 + i * 15, s - 6, 12); }
+    c.fillStyle = '#5e3b18'; c.fillRect(0, 0, s, 3); c.fillRect(0, s - 3, s, 3); c.fillRect(0, 0, 3, s); c.fillRect(s - 3, 0, 3, s);
+  }) });
+  MAT.wall = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
+    c.fillStyle = '#5b6470'; c.fillRect(0, 0, s, s);
+    for (let r = 0; r < 4; r++) for (let k = -1; k < 3; k++) {
+      c.fillStyle = (r + k) % 2 ? '#9aa3ad' : '#8a939e';
+      c.fillRect(k * 32 + (r % 2 ? 16 : 0) + 2, r * 16 + 2, 28, 12);
+    }
+  }) });
+  MAT.wall.map.repeat.set(1, 2); MAT.wall.map.wrapS = MAT.wall.map.wrapT = THREE.RepeatWrapping;
+}
+
+// ---------------------------------------------------------------------
+// フィールドの見た目
+// ---------------------------------------------------------------------
+function buildFieldMeshes() {
+  if (world) scene.remove(world);
+  world = new THREE.Group(); scene.add(world);
+  // 地面(1マス=1ユニットのグリッド)
+  const tex = makeCanvasTex(1024, (c, s) => {
+    const p = s / N;
+    for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+      const v = (Math.random() * 10) | 0;
+      c.fillStyle = `rgb(${104 + v},${178 + v},${92 + v})`; c.fillRect(x * p, z * p, p + 1, p + 1);
+    }
+    c.strokeStyle = 'rgba(0,40,0,.18)'; c.lineWidth = 1;
+    for (let i = 0; i <= N; i++) { c.beginPath(); c.moveTo(i * p, 0); c.lineTo(i * p, s); c.stroke(); c.beginPath(); c.moveTo(0, i * p); c.lineTo(s, i * p); c.stroke(); }
+  });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(N, N), new THREE.MeshLambertMaterial({ map: tex }));
+  ground.rotation.x = -Math.PI / 2; ground.position.set(N / 2, 0, N / 2); world.add(ground);
+  const outer = new THREE.Mesh(new THREE.PlaneGeometry(N * 5, N * 5), lam(0x4d7c44));
+  outer.rotation.x = -Math.PI / 2; outer.position.set(N / 2, -0.03, N / 2); world.add(outer);
+
+  // 木・岩(インスタンス描画で軽く)
+  const trees = [], rocks = [];
+  for (let i = 0; i < N * N; i++) { if (obst[i] === OB_TREE) trees.push(i); else if (obst[i] === OB_ROCK) rocks.push(i); }
+  const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.14, 0.2, 1, 6), lam(0x7a4a22), Math.max(1, trees.length));
+  const leaves = new THREE.InstancedMesh(new THREE.ConeGeometry(0.75, 2.0, 7), lam(0x2f8f3e), Math.max(1, trees.length));
+  trees.forEach((i, k) => {
+    const s = rand(0.85, 1.25), x = cX(i) + rand(-0.1, 0.1), z = cZ(i) + rand(-0.1, 0.1);
+    _m.compose(_v.set(x, 0.5 * s, z), _q.identity(), _s.set(s, s, s)); trunk.setMatrixAt(k, _m);
+    _m.compose(_v.set(x, (1 + 1.0) * s, z), _q.setFromEuler(_e.set(0, rand(0, TAU), 0)), _s.set(s, s, s)); leaves.setMatrixAt(k, _m);
+  });
+  trunk.count = leaves.count = trees.length;
+  const rockMesh = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.62, 0), lam(0x8f979f), Math.max(1, rocks.length));
+  rocks.forEach((i, k) => {
+    _m.compose(_v.set(cX(i), 0.38, cZ(i)), _q.setFromEuler(_e.set(rand(0, 1), rand(0, TAU), rand(0, 1))), _s.set(rand(0.9, 1.15), rand(0.75, 1.1), rand(0.9, 1.15)));
+    rockMesh.setMatrixAt(k, _m);
+  });
+  rockMesh.count = rocks.length;
+  [trunk, leaves, rockMesh].forEach((m) => { m.frustumCulled = false; world.add(m); });
+
+  // 柵
+  const posts = new THREE.InstancedMesh(GEO.small, lam(0x8b5a2b), N * 4);
+  let k = 0;
+  for (let i = 0; i < N; i++) for (const [x, z] of [[i, 0], [i, N - 1], [0, i], [N - 1, i]]) {
+    _m.compose(_v.set(x + 0.5, 0.6, z + 0.5), _q.identity(), _s.set(0.16, 1.2, 0.16)); posts.setMatrixAt(k++, _m);
+  }
+  posts.count = k; posts.frustumCulled = false; world.add(posts);
+  const railMat = lam(0xa8703a);
+  for (const y of [0.45, 0.95]) for (const [x, z, w, d] of [[N / 2, 0.5, N - 1, 0.08], [N / 2, N - 0.5, N - 1, 0.08], [0.5, N / 2, 0.08, N - 1], [N - 0.5, N / 2, 0.08, N - 1]]) {
+    const rail = new THREE.Mesh(GEO.small, railMat); rail.scale.set(w, 0.1, d); rail.position.set(x, y, z); world.add(rail);
+  }
+
+  // 小屋
+  const wallM = lam(0xe8d6b0), roofM = lam(0xb4442e), doorM = lam(0x6b4423);
+  for (const h of huts) {
+    const g = new THREE.Group(); g.position.set(h.x + 1.5, 0, h.z + 1.5); g.rotation.y = h.rot * Math.PI / 2;
+    const body = new THREE.Mesh(GEO.small, wallM); body.scale.set(2.9, 2.1, 2.9); body.position.y = 1.05; g.add(body);
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(2.5, 1.5, 4), roofM); roof.position.y = 2.85; roof.rotation.y = Math.PI / 4; g.add(roof);
+    const door = new THREE.Mesh(GEO.small, doorM); door.scale.set(0.75, 1.3, 0.06); door.position.set(0, 0.65, 1.46); g.add(door);
+    const win = new THREE.Mesh(GEO.small, lam(0x6fb6e8)); win.scale.set(0.06, 0.5, 0.6); win.position.set(1.46, 1.3, 0); g.add(win);
+    world.add(g);
+  }
+
+  // 動くもの用のインスタンスプール
+  POOL.crate = makePool(GEO.crate, MAT.crate, 600);
+  POOL.wood = makePool(GEO.wood, MAT.wood, 2500);
+  POOL.stone = makePool(GEO.stone, MAT.stone, 2500);
+  POOL.part = makePool(GEO.part, MAT.part, 400, true);
+  // 建築プレビュー
+  G3.preview = new THREE.Mesh(GEO.box1, MAT.preview); G3.preview.visible = false; world.add(G3.preview);
+  renderMinimapBase();
+}
+const POOL = {}, G3 = {};
+function makePool(geo, mat, cap, colored) {
+  const m = new THREE.InstancedMesh(geo, mat, cap);
+  m.count = 0; m.frustumCulled = false;
+  if (colored) for (let i = 0; i < cap; i++) m.setColorAt(i, _c.set(0xffffff));
+  world.add(m);
+  return m;
+}
+
+// ---------------------------------------------------------------------
+// キャラの見た目
+// ---------------------------------------------------------------------
+const humanMatCache = {};
+function addBox(g, mat, sx, sy, sz, x, y, z) { const m = new THREE.Mesh(GEO.small, mat); m.scale.set(sx, sy, sz); m.position.set(x, y, z); g.add(m); return m; }
+function addSphere(g, mat, r, x, y, z) { const m = new THREE.Mesh(GEO.sphere, mat); m.scale.setScalar(r); m.position.set(x, y, z); g.add(m); return m; }
+function makeStars(y) {
+  const g = new THREE.Group(); g.position.y = y; g.visible = false;
+  for (let i = 0; i < 3; i++) { const s = new THREE.Mesh(GEO.star, MAT.star); const a = (i / 3) * TAU; s.position.set(Math.cos(a) * 0.38, 0, Math.sin(a) * 0.38); g.add(s); }
+  return g;
+}
+function makeHumanMesh(color, isPlayer) {
+  const g = new THREE.Group();
+  const mat = humanMatCache[color] || (humanMatCache[color] = lam(color));
+  const body = new THREE.Mesh(GEO.body, mat); body.position.y = 0.62; g.add(body);
+  addBox(g, MAT.dark, 0.16, 0.22, 0.28, -0.12, 0.11, 0.03); addBox(g, MAT.dark, 0.16, 0.22, 0.28, 0.12, 0.11, 0.03);
+  const head = new THREE.Mesh(GEO.head, MAT.skin); head.position.y = 1.3; g.add(head);
+  addBox(g, MAT.dark, 0.06, 0.08, 0.04, -0.09, 1.34, 0.24); addBox(g, MAT.dark, 0.06, 0.08, 0.04, 0.09, 1.34, 0.24);
+  addBox(g, mat, 0.56, 0.1, 0.56, 0, 1.52, 0); // 帽子
+  const lantern = new THREE.Mesh(GEO.lantern, MAT.lantern); lantern.position.set(0.36, 0.72, 0.18); g.add(lantern);
+  addBox(g, MAT.dark, 0.03, 0.22, 0.03, 0.36, 0.86, 0.18);
+  const stick = new THREE.Group(); stick.position.set(-0.3, 0.9, 0); stick.visible = false;
+  addBox(stick, lam(0x8b5a2b), 0.09, 0.09, 0.9, 0, 0, 0.45); g.add(stick);
+  const ice = new THREE.Mesh(GEO.ice, MAT.ice); ice.position.y = 0.88; ice.visible = false; g.add(ice);
+  if (isPlayer) { const mk = new THREE.Mesh(GEO.cone, MAT.white); mk.scale.set(0.16, 0.25, 0.16); mk.rotation.x = Math.PI; mk.position.y = 2.0; g.add(mk); }
+  world.add(g);
+  return { g, lantern, ice, stick };
+}
+function makeOniMesh(type) {
+  const g = new THREE.Group(), parts = new THREE.Group(); g.add(parts);
+  if (type === 'carnivore') { // 四足歩行
+    addBox(parts, MAT.carn, 0.56, 0.5, 1.05, 0, 0.62, 0);
+    addBox(parts, MAT.carn, 0.46, 0.44, 0.46, 0, 0.86, 0.62);
+    addBox(parts, MAT.carnLight, 0.26, 0.2, 0.28, 0, 0.76, 0.92);
+    for (const sx of [-1, 1]) { const ear = new THREE.Mesh(GEO.cone, MAT.carnDark); ear.scale.set(0.09, 0.22, 0.09); ear.position.set(sx * 0.14, 1.17, 0.58); parts.add(ear); }
+    const legs = [];
+    for (const [lx, lz] of [[-0.19, 0.36], [0.19, 0.36], [-0.19, -0.36], [0.19, -0.36]]) legs.push(addBox(parts, MAT.carnDark, 0.14, 0.42, 0.14, lx, 0.21, lz));
+    const tail = addBox(parts, MAT.carnDark, 0.1, 0.1, 0.5, 0, 0.8, -0.68); tail.rotation.x = -0.5;
+    addSphere(parts, MAT.eye, 0.065, -0.12, 0.94, 0.86); addSphere(parts, MAT.eye, 0.065, 0.12, 0.94, 0.86);
+    g.userData.legs = legs;
+  } else { // 大きな人型
+    const legs = [addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, -0.3, 0.48, 0), addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, 0.3, 0.48, 0)];
+    addBox(parts, MAT.mons, 1.2, 1.15, 0.72, 0, 1.52, 0);
+    addBox(parts, MAT.mons, 0.78, 0.68, 0.68, 0, 2.43, 0.04);
+    const arms = [addBox(parts, MAT.mons, 0.34, 1.15, 0.38, -0.79, 1.42, 0.05), addBox(parts, MAT.mons, 0.34, 1.15, 0.38, 0.79, 1.42, 0.05)];
+    for (const sx of [-1, 1]) { const h = new THREE.Mesh(GEO.cone, MAT.horn); h.scale.set(0.12, 0.42, 0.12); h.position.set(sx * 0.27, 2.95, 0.02); h.rotation.z = -sx * 0.3; parts.add(h); }
+    addBox(parts, MAT.dark, 0.5, 0.1, 0.05, 0, 2.24, 0.39);
+    addSphere(parts, MAT.eye, 0.085, -0.18, 2.52, 0.38); addSphere(parts, MAT.eye, 0.085, 0.18, 2.52, 0.38);
+    g.userData.legs = legs; g.userData.arms = arms;
+  }
+  const stars = makeStars(ONI[type].h + 0.35); g.add(stars);
+  world.add(g);
+  return { g, parts, stars };
+}
+
+// =====================================================================
+// ゲーム状態
+// =====================================================================
+let G = null, scene_ = 'title', playerSide = 'human', playerOniType = 'carnivore';
+let camYaw = 0, nightK = 0;
+const playing = () => scene_ === 'day' || scene_ === 'night';
+
+function makeHuman(i, isPlayer, x, z) {
+  const color = HUMAN_COLORS[i % HUMAN_COLORS.length];
+  const h = {
+    kind: 'human', id: i, isPlayer, x, z, y: 0, vy: 0, onGround: true, yaw: 0, r: HUMAN_R, hgt: HUMAN_H, jumpH: HUMAN_JUMP,
+    wood: START_WOOD, stone: START_STONE, stamina: STAMINA_MAX, state: 'ok', freezeTimer: 0, freezeCount: 0, thaw: 0,
+    buildType: 'scaffold', standBlock: null, standTime: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), safeFx: 0,
+    mesh: makeHumanMesh(color, isPlayer), name: isPlayer ? 'あなた' : 'CPU' + i,
+  };
+  const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.style.display = 'none'; $('labels').appendChild(lbl); h.label = lbl;
+  return h;
+}
+function makeOni(i, type, isPlayer, x, z) {
+  const d = ONI[type];
+  return { kind: 'oni', id: i, type, isPlayer, x, z, y: 0, vy: 0, onGround: true, yaw: Math.PI, r: d.r, hgt: d.h, jumpH: d.jump,
+           fruits: 0, stun: 0, atkCd: 0, freezeCd: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), mesh: makeOniMesh(type), walkT: 0 };
+}
+function newAI() {
+  return { pathT: 0, pFrom: -1, pGoal: -1, pNext: -1, pBreak: false, qT: 0, qKey: '', qFrom: -1, q: null,
+           wander: -1, wanderT: 0, buildT: rand(2, 5), queue: [], towers: 0, hitCd: 0, banCell: -1, banT: 0,
+           fleeA: rand(0, TAU), lastX: 0, lastZ: 0, stuckT: 0, unstickT: 0, unstickA: 0 };
+}
+
+function spawnBox(i, big = false, y = 0) {
+  const b = { x: cX(i) + rand(-0.15, 0.15), z: cZ(i) + rand(-0.15, 0.15), y, vy: 0, big, opened: false, rot: rand(0, TAU) };
+  if (big) {
+    const g = new THREE.Group();
+    addBox(g, MAT.chest, 1.4, 0.8, 1.0, 0, 0.4, 0); addBox(g, MAT.gold, 1.45, 0.16, 1.05, 0, 0.72, 0);
+    addBox(g, MAT.chest, 1.4, 0.32, 1.0, 0, 0.96, 0); addBox(g, MAT.gold, 0.22, 0.3, 0.08, 0, 0.62, 0.52);
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 40, 10, 1, true), MAT.beam); beam.position.y = 20; g.add(beam);
+    world.add(g); b.mesh = g; G.chest = b;
+  }
+  G.boxes.push(b);
+  return b;
+}
+
+function startGame() {
+  genField();
+  buildFieldMeshes();
+  $('labels').innerHTML = '';
+  G = { phase: 'day', timeLeft: DAY_TIME, dayElapsed: 0, nextEvent: EVENT_INTERVAL, humans: [], onis: [], boxes: [], items: [], fruits: [],
+        blocks: [], parts: [], fx: [], chest: null, rain: null, player: null, spectate: null, buildMode: false, buildIdle: 0,
+        stats: { freezes: 0, thaws: 0, hits: 0, built: 0 }, cam: new THREE.Vector3() };
+  const c = N / 2;
+  for (let i = 0; i < HUMAN_COUNT; i++) {
+    const a = (i / HUMAN_COUNT) * TAU;
+    G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, c + Math.cos(a) * 2, c + Math.sin(a) * 2));
+  }
+  for (let i = 0; i < ONI_COUNT; i++) {
+    const type = playerSide === 'oni' ? (i === 0 ? playerOniType : playerOniType === 'carnivore' ? 'monster' : 'carnivore') : (i % 2 ? 'monster' : 'carnivore');
+    const [sx, sz] = ONI_SPAWNS[i % ONI_SPAWNS.length];
+    G.onis.push(makeOni(i, type, playerSide === 'oni' && i === 0, sx + 0.5, sz + 0.5));
+  }
+  G.player = playerSide === 'human' ? G.humans[0] : G.onis[0];
+  for (let i = 0; i < BOX_COUNT; i++) spawnBox(randomFreeCell(1));
+  for (let i = 0; i < FRUIT_COUNT; i++) {
+    const ci = randomFreeCell(2), g = new THREE.Group();
+    const f = new THREE.Mesh(GEO.fruit, MAT.fruit); g.add(f);
+    const leaf = new THREE.Mesh(GEO.small, MAT.leaf); leaf.scale.set(0.16, 0.04, 0.26); leaf.position.set(0.05, 0.24, 0); leaf.rotation.z = 0.4; g.add(leaf);
+    world.add(g);
+    G.fruits.push({ x: cX(ci), z: cZ(ci), y: 0.45, mesh: g, bob: rand(0, TAU) });
+  }
+  camYaw = 0; nightK = 0;
+  G.cam.set(G.player.x, G.player.y + 1.2, G.player.z);
+  scene_ = 'day';
+  applyLighting();
+  showScreen(null); setupHUD();
+  telop(playerSide === 'human' ? '☀ 昼: 箱を開けて資材を集め、足場を積もう！' : '☀ 昼: 力の実を集めよう（まだ人には触れても無効）', 'blue');
+}
+
+function startNight() {
+  G.phase = 'night'; scene_ = 'night'; G.timeLeft = NIGHT_TIME;
+  for (const f of G.fruits) world.remove(f.mesh);
+  G.fruits = [];
+  if (G.chest) { G.chest.mesh.children.forEach((m) => { if (m.material === MAT.beam) m.visible = false; }); }
+  G.rain && world.remove(G.rain.mesh); G.rain = null;
+  G.onis.forEach((o, i) => { const [sx, sz] = ONI_SPAWNS[i % ONI_SPAWNS.length]; o.x = sx + 0.5; o.z = sz + 0.5; o.y = 0; o.vy = 0; o.ai = newAI(); });
+  G.humans.forEach((h) => { h.ai.queue = []; h.standBlock = null; h.standTime = 0; });
+  telop('🌙 夜が来た… 鬼ごっこ開始！', '');
+  setupHUD();
+}
+
+function endGame(winner) {
+  scene_ = 'result';
+  const alive = G.humans.filter((h) => h.state !== 'out').length, youWin = winner === playerSide;
+  setupHUD(true);
+  showScreen(`
+    <div class="result-big ${youWin ? 'win' : 'lose'}">${youWin ? '🏆 勝利！' : '敗北…'}</div>
+    <h2>${winner === 'human' ? '人チーム' : '鬼チーム'}の勝ち</h2>
+    <div class="stats">生き残った人 <b>${alive} / ${HUMAN_COUNT}</b>　凍結 <b>${G.stats.freezes}</b>回　解凍 <b>${G.stats.thaws}</b>回<br>
+      建てたブロック <b>${G.stats.built}</b>個　鬼を叩いた回数 <b>${G.stats.hits}</b></div>
+    <div class="row2"><button class="choice c-human" data-act="again">もう一度遊ぶ</button><button class="choice c-plain" data-act="title">タイトルへ</button></div>
+  `);
+}
+
+// ---------------------------------------------------------------------
+// 昼のイベント
+// ---------------------------------------------------------------------
+function areaName(x, z) {
+  const t = (v) => (v < N / 3 ? 0 : v < (N * 2) / 3 ? 1 : 2);
+  return (['北', '', '南'][t(z)] + ['西', '', '東'][t(x)]) || '中央';
+}
+function triggerEvent() {
+  if (Math.random() < 0.5 || G.chest) { // 宝箱が残っているときは雨
+    const ci = randomFreeCell(8), cx = ci % N, cz = (ci / N) | 0, R = 6;
+    for (let k = 0; k < RAIN_BOXES; k++) spawnBox(randomFreeCell(1, (x, z) => Math.hypot(x - cx, z - cz) <= R), false, rand(14, 34));
+    const ring = new THREE.Mesh(new THREE.RingGeometry(R - 0.3, R, 48), MAT.ring);
+    ring.rotation.x = -Math.PI / 2; ring.position.set(cx + 0.5, 0.05, cz + 0.5); world.add(ring);
+    if (G.rain) world.remove(G.rain.mesh);
+    G.rain = { mesh: ring, t: 8, x: cx + 0.5, z: cz + 0.5, r: R };
+    telop(`📦 資材の雨！ ${areaName(cx, cz)}エリアに箱が降ってくる！`);
+  } else {
+    const ci = randomFreeCell(4);
+    spawnBox(ci, true, 0);
+    telop(`💰 巨大宝箱が出現！ ${areaName(ci % N, (ci / N) | 0)}エリアをさがせ！`);
+  }
+}
+
+// =====================================================================
+// 建築
+// =====================================================================
+function frontCell(e) {
+  const dx = Math.sin(e.yaw), dz = Math.cos(e.yaw);
+  let sx = 0, sz = 0;
+  if (Math.abs(dx) >= Math.abs(dz)) sx = Math.sign(dx); else sz = Math.sign(dz);
+  const x = Math.floor(e.x) + sx, z = Math.floor(e.z) + sz;
+  return inField(x, z) ? idx(x, z) : -1;
+}
+function canPlace(i, type) {
+  if (i < 0 || obst[i]) return false;
+  const p = PARTS[type], base = heights[i];
+  if (base + p.h > MAX_STACK) return false;
+  const x = i % N, z = (i / N) | 0;
+  for (const b of G.boxes) if (!b.opened && Math.floor(b.x) === x && Math.floor(b.z) === z) return false;
+  for (const f of G.fruits) if (Math.floor(f.x) === x && Math.floor(f.z) === z) return false;
+  for (const e of [...G.humans, ...G.onis]) { // キャラと重なる場所には置けない
+    if (e.state === 'out') continue;
+    if (e.x + e.r <= x || e.x - e.r >= x + 1 || e.z + e.r <= z || e.z - e.r >= z + 1) continue;
+    if (e.y < base + p.h && e.y + e.hgt > base) return false;
+  }
+  return true;
+}
+function placeBlock(h, i, type, silent) {
+  const p = PARTS[type];
+  if (h.wood < p.wood || h.stone < p.stone) { if (!silent) toast(`資材が足りない (${p.name}: ${costText(type)})`); return false; }
+  if (!canPlace(i, type)) { if (!silent) toast('そこには置けない'); return false; }
+  h.wood -= p.wood; h.stone -= p.stone;
+  const col = cols[i], base = heights[i];
+  const mesh = new THREE.Mesh(p.h === 2 ? GEO.box2 : GEO.box1, type === 'wall' ? MAT.wall : MAT.scaffold);
+  const b = { type, i, h: p.h, hp: p.hp, maxHp: p.hp, base, visY: base + 0.6, vy: 0, crumble: -1, shake: 0, mesh };
+  col.push(b); heights[i] = base + p.h;
+  mesh.position.set(cX(i), b.visY + p.h / 2, cZ(i)); world.add(mesh);
+  G.blocks.push(b); G.stats.built++;
+  burst(cX(i), base + p.h, cZ(i), type === 'wall' ? 0xb8c0cc : 0xc98a4b, 8);
+  // 積んだ場所にある資材は上に乗せる
+  for (const it of G.items) if (Math.floor(it.x) === i % N && Math.floor(it.z) === ((i / N) | 0) && it.y < heights[i]) it.y = heights[i];
+  return true;
+}
+function removeBlock(b) {
+  const col = cols[b.i], k = col.indexOf(b);
+  if (k < 0) return;
+  col.splice(k, 1);
+  world.remove(b.mesh);
+  G.blocks.splice(G.blocks.indexOf(b), 1);
+  let base = 0;
+  for (const o of col) { o.base = base; base += o.h; } // 上に積まれていたブロックは落下する
+  heights[b.i] = base;
+  burst(cX(b.i), b.base + b.h / 2, cZ(b.i), b.type === 'wall' ? 0x9aa3ad : 0xb07a43, 16);
+}
+function damageBlock(b, dmg) {
+  b.hp -= dmg; b.shake = 0.25;
+  burst(cX(b.i), b.base + b.h / 2, cZ(b.i), b.type === 'wall' ? 0x9aa3ad : 0xb07a43, 6);
+  if (b.hp <= 0) { addFx(cX(b.i), b.base + b.h + 0.4, cZ(b.i), 'バキッ!', '#fff'); removeBlock(b); }
+}
+// 鬼の高さにあるブロック(なければ一番下)を狙う
+function attackCell(o, i) {
+  const col = cols[i]; if (!col || !col.length) return false;
+  const b = col.find((x) => x.base + x.h > o.y + 0.05) || col[col.length - 1];
+  damageBlock(b, ONI[o.type].dmg);
+  return true;
+}
+function costText(type) { const p = PARTS[type], a = []; if (p.wood) a.push(`木${p.wood}`); if (p.stone) a.push(`石${p.stone}`); return a.join('+'); }
+
+// =====================================================================
+// アクション
+// =====================================================================
+function jump(e) { if (e.onGround && !(e.stun > 0) && e.state !== 'frozen') { e.vy = Math.sqrt(2 * GRAVITY * e.jumpH); e.onGround = false; } }
+
+function openBox(b) {
+  if (b.opened || b.y > 0.01 + groundAt(b.x, b.z, 0.1)) return;
+  b.opened = true;
+  const n = b.big ? CHEST_ITEMS : BOX_ITEMS;
+  for (let k = 0; k < n; k++) {
+    const a = rand(0, TAU), sp = b.big ? rand(1.5, 5) : rand(1, 2.8);
+    G.items.push({ x: b.x, z: b.z, y: b.y + 0.5, vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(4, 7.5),
+                   type: Math.random() < 0.58 ? 'wood' : 'stone', age: 0, magnet: null, rot: rand(0, TAU), spin: rand(-6, 6) });
+  }
+  burst(b.x, b.y + 0.4, b.z, b.big ? 0xffd34d : 0xe3a25a, b.big ? 30 : 10);
+  if (b.mesh) world.remove(b.mesh);
+  if (b === G.chest) G.chest = null;
+}
+function doPick(h) {
+  let any = false;
+  for (const b of G.boxes) if (!b.opened && hdist(b, h) < (b.big ? 2.2 : 1.6) && Math.abs(b.y - h.y) < 1.2) { openBox(b); any = true; }
+  for (const it of G.items) if (hdist(it, h) < 3.5 && Math.abs(it.y - h.y) < 2.5) { it.magnet = h; it.age = Math.max(it.age, 0.4); any = true; }
+  if (!any && h.isPlayer) toast('近くに箱や資材がない');
+}
+function doHit(h) {
+  if (h.state !== 'ok') return;
+  if (h.stamina < HIT_COST) { if (h.isPlayer) toast('スタミナが足りない'); return; }
+  h.stamina -= HIT_COST; h.swing = 0.3;
+  let hit = false;
+  for (const o of G.onis) {
+    const d = hdist(o, h);
+    if (d > HIT_RANGE + o.r || Math.abs(o.y - h.y) > 1.6) continue;
+    const dot = (Math.sin(h.yaw) * (o.x - h.x) + Math.cos(h.yaw) * (o.z - h.z)) / (d || 1);
+    if (dot < 0.2 && d > h.r + o.r + 0.2) continue;
+    o.stun = HIT_STUN; hit = true;
+    addFx(o.x, o.y + o.hgt + 0.3, o.z, 'ゴンッ!', '#ffe066'); burst(o.x, o.y + o.hgt * 0.6, o.z, 0xffe066, 10);
+  }
+  if (hit) G.stats.hits++;
+}
+function canTouch(o, h) {
+  if (o.type === 'carnivore') return h.y < HIGH_Y;     // 高鬼: 高い場所の人にはタッチできない
+  return h.y <= MONSTER_REACH;                          // モンスターは高さ1まで届く
+}
+function tryFreeze(o, h) {
+  if (G.phase !== 'night' || h.state !== 'ok' || o.stun > 0 || o.freezeCd > 0) return false;
+  if (!canTouch(o, h)) {
+    if (h.safeFx <= 0) { addFx(h.x, h.y + 2, h.z, 'セーフ!', '#7CFC9A'); h.safeFx = 1; }
+    return false;
+  }
+  o.freezeCd = 0.8;
+  if (h.freezeCount >= MAX_FREEZE_COUNT) { eliminate(h, '即脱落!'); return true; }
+  h.freezeCount++; h.state = 'frozen'; h.freezeTimer = FREEZE_LIMIT; h.thaw = 0; G.stats.freezes++;
+  addFx(h.x, h.y + 2.1, h.z, '凍結!', '#9be7ff'); burst(h.x, h.y + 1, h.z, 0xc9f3ff, 16);
+  if (h.isPlayer) { toast(`凍結！ 仲間に${THAW_TIME}秒触れてもらうと解凍`); G.buildMode = false; }
+  return true;
+}
+function eliminate(h, text) {
+  h.state = 'out'; h.mesh.g.visible = false; h.label.style.display = 'none';
+  addFx(h.x, h.y + 2, h.z, text || '脱落…', '#ff8787'); burst(h.x, h.y + 1, h.z, 0xff8787, 20);
+  if (h.isPlayer) { telop('あなたは脱落… 仲間を観戦中'); G.buildMode = false; }
+}
+function doOniAttack(o) {
+  if (o.atkCd > 0 || o.stun > 0) return;
+  o.atkCd = ONI_ATTACK_CD; o.swing = 0.3;
+  const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
+  if (G.phase === 'night') {
+    for (const h of G.humans) {
+      if (h.state !== 'ok') continue;
+      const d = hdist(h, o);
+      if (d > ONI_ATTACK_RANGE + o.r + h.r) continue;
+      const dot = (fx * (h.x - o.x) + fz * (h.z - o.z)) / (d || 1);
+      if (dot < 0.25 && d > o.r + h.r + 0.2) continue;
+      if (tryFreeze(o, h)) return;
+    }
+  }
+  const i = frontCell(o);
+  if (i < 0 || !cols[i].length) return;
+  if (G.phase !== 'night') { if (o.isPlayer) toast('昼のあいだは建物を壊せない'); return; }
+  attackCell(o, i);
+}
+
+// =====================================================================
+// 演出(パーティクル・文字・テロップ)
+// =====================================================================
+function burst(x, y, z, color, n) {
+  for (let k = 0; k < n && G.parts.length < 400; k++) {
+    const a = rand(0, TAU), sp = rand(1, 4);
+    G.parts.push({ x, y, z, vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: rand(1, 5), t: 0, life: rand(0.4, 0.8), color });
+  }
+}
+function addFx(x, y, z, text, color) {
+  const el = document.createElement('div'); el.className = 'lbl'; el.textContent = text; el.style.color = color; $('labels').appendChild(el);
+  G.fx.push({ x, y, z, el, t: 0 });
+}
+let telopTimer = null;
+function telop(text, cls) {
+  const el = $('telop'); el.textContent = text; el.className = 'show ' + (cls || '');
+  clearTimeout(telopTimer); telopTimer = setTimeout(() => (el.className = cls || ''), 3500);
+}
+let toastTimer = null, lastToast = '', lastToastAt = 0;
+function toast(text) {
+  const now = performance.now(); if (text === lastToast && now - lastToastAt < 700) return;
+  lastToast = text; lastToastAt = now;
+  const el = $('toast'); el.textContent = text; el.className = 'show';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.className = ''), 1400);
+}
+
+// =====================================================================
+// 入力
+// =====================================================================
+const input = { joyId: null, camId: null, base: { x: 0, y: 0 }, sx: 0, sy: 0, camLastX: 0, keys: {} };
+const JOY_R = 56;
+function placeJoy(x, y, kx, ky) {
+  const j = $('joy'); j.style.left = x + 'px'; j.style.top = y + 'px';
+  $('knob').style.transform = `translate(${kx}px, ${ky}px)`;
+}
+function onPointerDown(e) {
+  if (!playing()) return;
+  e.preventDefault();
+  if (e.clientX < innerWidth * 0.5 && input.joyId === null) {
+    input.joyId = e.pointerId; input.base = { x: e.clientX, y: e.clientY }; input.sx = input.sy = 0;
+    $('joy').classList.add('active'); placeJoy(e.clientX, e.clientY, 0, 0);
+  } else if (e.clientX >= innerWidth * 0.5 && input.camId === null) {
+    input.camId = e.pointerId; input.camLastX = e.clientX;
+  }
+}
+function onPointerMove(e) {
+  if (e.pointerId === input.joyId) {
+    let dx = e.clientX - input.base.x, dy = e.clientY - input.base.y;
+    const l = Math.hypot(dx, dy);
+    if (l > JOY_R) { dx = (dx / l) * JOY_R; dy = (dy / l) * JOY_R; }
+    const m = Math.min(1, l / JOY_R), k = m < 0.15 ? 0 : m, len = Math.hypot(dx, dy) || 1;
+    input.sx = (dx / len) * k; input.sy = (dy / len) * k;
+    placeJoy(input.base.x, input.base.y, dx, dy);
+  } else if (e.pointerId === input.camId) {
+    camYaw -= (e.clientX - input.camLastX) * CAM_ROT_SPEED; input.camLastX = e.clientX;
+  }
+}
+function onPointerUp(e) {
+  if (e.pointerId === input.joyId) { input.joyId = null; input.sx = input.sy = 0; resetJoy(); }
+  if (e.pointerId === input.camId) input.camId = null;
+}
+function resetJoy() { $('joy').classList.remove('active'); placeJoy(95, innerHeight - 95, 0, 0); }
+
+function bindButton(el, onDown, onUp) {
+  el.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); el.classList.add('pressed');
+    try { el.setPointerCapture(e.pointerId); } catch (_) {} onDown && onDown(); });
+  const up = (cancel) => { el.classList.remove('pressed'); onUp && onUp(cancel); };
+  el.addEventListener('pointerup', () => up(false));
+  el.addEventListener('pointercancel', () => up(true));
+}
+const canAct = () => playing() && G.player.kind === 'human' && G.player.state === 'ok';
+bindButton($('bPick'), () => canAct() && doPick(G.player));
+bindButton($('bHit'), () => canAct() && doHit(G.player));
+bindButton($('bJump'), () => playing() && G.player.state !== 'out' && jump(G.player));
+bindButton($('bAttack'), () => playing() && G.player.kind === 'oni' && doOniAttack(G.player));
+// 建てる: 1回目でプレビュー、2回目で設置。長押しで種類切り替え
+const buildPress = { down: false, t: 0, switched: false };
+bindButton($('bBuild'), () => { buildPress.down = true; buildPress.t = 0; buildPress.switched = false; },
+  (cancel) => { if (buildPress.down && !buildPress.switched && !cancel) pressBuild(); buildPress.down = false; $('buildRing').style.borderColor = 'transparent'; });
+function pressBuild() {
+  if (!canAct()) return;
+  G.buildIdle = 0;
+  if (!G.buildMode) { G.buildMode = true; return; }
+  placeBlock(G.player, frontCell(G.player), G.player.buildType, false);
+}
+function switchPart() {
+  if (!canAct()) return;
+  const h = G.player; h.buildType = PART_ORDER[(PART_ORDER.indexOf(h.buildType) + 1) % PART_ORDER.length];
+  G.buildMode = true; G.buildIdle = 0;
+  toast(`建築: ${PARTS[h.buildType].name} (${costText(h.buildType)})`);
+  try { navigator.vibrate && navigator.vibrate(30); } catch (_) {}
+}
+window.addEventListener('keydown', (e) => {
+  input.keys[e.code] = true;
+  if (!playing() || e.repeat) return;
+  if (e.code === 'Space') jump(G.player);
+  if (G.player.kind === 'human') {
+    if (e.code === 'KeyJ') canAct() && doPick(G.player);
+    if (e.code === 'KeyK') pressBuild();
+    if (e.code === 'KeyQ') switchPart();
+    if (e.code === 'KeyL') canAct() && doHit(G.player);
+  } else if (e.code === 'KeyJ' || e.code === 'KeyL') doOniAttack(G.player);
+});
+window.addEventListener('keyup', (e) => { input.keys[e.code] = false; });
+// カメラ基準の移動ベクトル
+function playerMove() {
+  let sx = input.sx, sy = input.sy;
+  const k = input.keys;
+  const kx = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), ky = (k.KeyS ? 1 : 0) - (k.KeyW ? 1 : 0);
+  if (kx || ky) { const l = Math.hypot(kx, ky); sx = kx / l; sy = ky / l; }
+  if (k.ArrowLeft) camYaw += 0.04; if (k.ArrowRight) camYaw -= 0.04;
+  const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw), rx = Math.cos(camYaw), rz = -Math.sin(camYaw);
+  return { x: rx * sx - fx * sy, z: rz * sx - fz * sy };
+}
+
+// =====================================================================
+// 物理(箱同士の簡易判定)
+// =====================================================================
+function moveBody(e, dx, dz) {
+  e.blocked = -Infinity;
+  const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dz)) / 0.2) || 1;
+  for (let s = 0; s < steps; s++) {
+    const sx = dx / steps, sz = dz / steps;
+    let b = blockedTop(e.x + sx, e.z, e.r, e.y); if (b === -Infinity) e.x += sx; else e.blocked = Math.max(e.blocked, b);
+    b = blockedTop(e.x, e.z + sz, e.r, e.y); if (b === -Infinity) e.z += sz; else e.blocked = Math.max(e.blocked, b);
+  }
+}
+function physics(e, dt) {
+  e.vy -= GRAVITY * dt; e.y += e.vy * dt;
+  const g = groundAt(e.x, e.z, e.r);
+  if (e.y <= g) { e.y = g; e.vy = 0; e.onGround = true; } else e.onGround = false;
+}
+function autoJump(e) { // CPU: 登れる段差に当たったらジャンプ
+  if (e.onGround && e.blocked !== -Infinity && e.blocked - e.y <= e.jumpH - 0.12) jump(e);
+}
+
+// =====================================================================
+// CPU
+// =====================================================================
+function wander(e, maxUp, speed = 0.55) {
+  const ai = e.ai;
+  if (ai.wander < 0 || ai.wanderT <= 0 || cellOf(e) === ai.wander) { ai.wander = randomFreeCell(2); ai.wanderT = rand(4, 8); }
+  const d = seekPoint(e, cX(ai.wander), cZ(ai.wander), maxUp, false);
+  return { x: d.x * speed, z: d.z * speed };
+}
+function fleeDir(h) {
+  let best = null, bs = -Infinity;
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * TAU, dx = Math.sin(a), dz = Math.cos(a);
+    const t = cellTop(h.x + dx * 0.9, h.z + dz * 0.9);
+    if (t - h.y > h.jumpH - 0.1) continue;
+    const px = h.x + dx * 3, pz = h.z + dz * 3;
+    let md = Infinity;
+    for (const o of G.onis) md = Math.min(md, Math.hypot(px - o.x, pz - o.z) * (o.stun > 0 ? 1.6 : 1));
+    let s = md;
+    if (cellTop(px, pz) - h.y > h.jumpH) s -= 1.5;
+    const ex = Math.min(px, N - px), ez = Math.min(pz, N - pz);
+    if (ex < 4) s -= 4 - ex; if (ez < 4) s -= 4 - ez;
+    s += 0.6 * Math.cos(a - h.ai.fleeA);
+    if (s > bs) { bs = s; best = a; }
+  }
+  if (best === null) return { x: 0, z: 0 };
+  h.ai.fleeA = best;
+  return { x: Math.sin(best), z: Math.cos(best) };
+}
+const isCrumbling = (i) => { const c = cols[i]; return c.length && c[c.length - 1].crumble >= 0; };
+const cellFree = (i) => {
+  if (obst[i] || heights[i] !== 0) return false;
+  const x = i % N, z = (i / N) | 0;
+  if (G.boxes.some((b) => !b.opened && Math.floor(b.x) === x && Math.floor(b.z) === z)) return false;
+  return ![...G.humans, ...G.onis].some((e) => e.state !== 'out' && Math.floor(e.x) === x && Math.floor(e.z) === z);
+};
+// 階段状の足場を計画: A(1段) → B(2段) → C(3段)
+function planStair(h) {
+  if (h.y > 0.05) return;
+  const cx = Math.floor(h.x), cz = Math.floor(h.z);
+  const steps = h.wood >= 12 ? 3 : 2;
+  for (const [dx, dz] of shuffle(DIRS4.slice())) {
+    const cells = [];
+    for (let s = 1; s <= steps; s++) { const x = cx + dx * s, z = cz + dz * s; if (!inField(x, z)) break; cells.push(idx(x, z)); }
+    if (cells.length < steps || !cells.every(cellFree)) continue;
+    h.ai.queue = [];
+    cells.forEach((c, s) => { for (let k = 0; k <= s; k++) h.ai.queue.push(c); });
+    h.ai.towers++;
+    return;
+  }
+}
+function humanAI(h, dt) {
+  const ai = h.ai;
+  ai.buildT -= dt; ai.hitCd -= dt; ai.banT -= dt; ai.wanderT -= dt;
+  let mv = { x: 0, z: 0 };
+  if (G.phase === 'day') {
+    if (ai.queue.length) {
+      if (ai.buildT <= 0) {
+        ai.buildT = 0.35;
+        const c = ai.queue[0];
+        if (Math.hypot(cX(c) - h.x, cZ(c) - h.z) < 3.8 && placeBlock(h, c, 'scaffold', true)) ai.queue.shift(); else ai.queue = [];
+      }
+    } else {
+      if (ai.buildT <= 0) { ai.buildT = rand(2, 4); if (h.wood >= 6 && ai.towers < 2) planStair(h); }
+      let t = G.chest && hdist(G.chest, h) < 45 && G.chest.y < 0.1 ? G.chest : null;
+      if (!t) t = nearest(G.items, h, (it) => !it.magnet && hdist(it, h) < 10 && it.y < h.y + 1.5);
+      const box = nearest(G.boxes, h, (b) => !b.opened && b.y <= 0.05);
+      if (!t || (box && hdist(box, h) < hdist(t, h) * 0.5)) t = box || t;
+      mv = t ? seekPoint(h, t.x, t.z, 1, false) : wander(h, 1);
+      if (Math.random() < 0.05) { const near = G.items.some((it) => !it.magnet && hdist(it, h) < 3.5); if (near) doPick(h); }
+    }
+  } else {
+    let near = null, nd = Infinity;
+    for (const o of G.onis) { const d = hdist(o, h) * (o.stun > 0 ? 1.8 : 1); if (d < nd) { nd = d; near = o; } }
+    const here = cellOf(h);
+    if (h.standTime > 3.5) { ai.banCell = here; ai.banT = 6; }
+    const threats = G.onis.filter((o) => o.stun <= 0 && hdist(o, h) < 9);
+    const safeHere = threats.length > 0 && threats.every((o) => !canTouch(o, h)) && h.standTime <= 3.5 &&
+                     !threats.some((o) => o.type === 'monster' && hdist(o, h) < 4);
+    const minOni = (p) => Math.min(...G.onis.map((o) => hdist(o, p) * (o.stun > 0 ? 1.8 : 1)));
+    const ally = nearest(G.humans, h, (a) => a.state === 'frozen' && hdist(a, h) < 14 && minOni(a) > 7);
+    if (safeHere) {
+      h.yaw = Math.atan2(near.x - h.x, near.z - h.z);
+    } else if (ally && nd > 6) {
+      mv = hdist(ally, h) > h.r * 2 + 0.25 ? seekPoint(h, ally.x, ally.z, 1, false) : { x: 0, z: 0 };
+    } else if (nd < 10) {
+      let r = null;
+      if (near.type === 'carnivore' && nd > 1.4)
+        r = seekPred(h, 'high', (i) => heights[i] >= 1 && !obst[i] && !isCrumbling(i) && !(ai.banT > 0 && i === ai.banCell), 1, 12);
+      mv = r ? r.dir : fleeDir(h);
+      if (nd < 1.6 && near.stun <= 0 && h.stamina >= HIT_COST && ai.hitCd <= 0) {
+        h.yaw = Math.atan2(near.x - h.x, near.z - h.z); doHit(h); ai.hitCd = 1.2;
+      }
+    } else {
+      mv = wander(h, 1, 0.5);
+    }
+  }
+  if (ai.unstickT > 0) { ai.unstickT -= dt; mv = { x: Math.sin(ai.unstickA), z: Math.cos(ai.unstickA) }; }
+  h.mv = mv;
+}
+function oniAI(o, dt) {
+  const ai = o.ai; ai.wanderT -= dt;
+  let mv = { x: 0, z: 0 };
+  if (o.stun > 0) { o.mv = mv; return; }
+  if (G.phase === 'day') {
+    const f = o.fruits < MAX_FRUITS ? nearest(G.fruits, o) : null;
+    mv = f ? seekPoint(o, f.x, f.z, 0, false) : wander(o, 0, 0.6);
+  } else {
+    const ok = G.humans.filter((h) => h.state === 'ok');
+    let target = nearest(ok, o, (h) => canTouch(o, h)), waiting = false;
+    if (!target) { target = nearest(ok, o); waiting = true; }
+    if (!target) {
+      const fr = nearest(G.humans, o, (h) => h.state === 'frozen');
+      mv = fr && hdist(fr, o) > 3 ? seekPoint(o, fr.x, fr.z, 0, false) : wander(o, 0, 0.4);
+    } else {
+      const d = hdist(o, target);
+      if (target.y >= HIGH_Y && d < 1.9) { // 足場の上の人: 足場を壊す(モンスターは1〜2回、肉食動物は少しずつ)
+        o.yaw = Math.atan2(target.x - o.x, target.z - o.z);
+        if (o.atkCd <= 0) { o.atkCd = ONI_ATTACK_CD; o.swing = 0.3; attackCell(o, cellOf(target)); }
+      } else if (waiting && d < 2.6) {
+        o.yaw = Math.atan2(target.x - o.x, target.z - o.z);
+      } else {
+        mv = seekPoint(o, target.x, target.z, 0, true);
+      }
+      if (!waiting && d < ONI_ATTACK_RANGE + o.r) { o.yaw = Math.atan2(target.x - o.x, target.z - o.z); doOniAttack(o); }
+      // 経路上のブロックを壊して進む
+      if (ai.pBreak && ai.pNext >= 0 && cols[ai.pNext].length && Math.hypot(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z) < 1.25 && o.atkCd <= 0) {
+        o.yaw = Math.atan2(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z);
+        o.atkCd = ONI_ATTACK_CD; o.swing = 0.3; attackCell(o, ai.pNext);
+      }
+    }
+  }
+  if (ai.unstickT > 0) { ai.unstickT -= dt; mv = { x: Math.sin(ai.unstickA), z: Math.cos(ai.unstickA) }; }
+  o.mv = mv;
+}
+function checkStuck(e, dt) {
+  const ai = e.ai, wants = Math.hypot(e.mv.x, e.mv.z) > 0.3, moved = Math.hypot(e.x - ai.lastX, e.z - ai.lastZ);
+  ai.lastX = e.x; ai.lastZ = e.z;
+  if (wants && moved < 0.01) ai.stuckT += dt; else ai.stuckT = Math.max(0, ai.stuckT - dt);
+  if (ai.stuckT > 0.7) {
+    ai.stuckT = 0; ai.unstickT = 0.5; ai.unstickA = rand(0, TAU); ai.pathT = 0; ai.qT = 0;
+    if (e.kind === 'oni' && G.phase === 'night') doOniAttack(e);
+    else if (e.kind === 'human') jump(e);
+  }
+}
+
+// =====================================================================
+// 更新
+// =====================================================================
+function update(dt) {
+  G.timeLeft -= dt;
+  if (G.phase === 'day') {
+    G.dayElapsed += dt;
+    if (G.dayElapsed >= G.nextEvent && G.nextEvent < DAY_TIME) { triggerEvent(); G.nextEvent += EVENT_INTERVAL; }
+    if (G.rain) { G.rain.t -= dt; if (G.rain.t <= 0) { world.remove(G.rain.mesh); G.rain = null; } }
+    if (G.timeLeft <= 0) { startNight(); return; }
+  } else if (G.timeLeft <= 0) { endGame(G.humans.some((h) => h.state !== 'out') ? 'human' : 'oni'); return; }
+
+  // 建てるボタンの長押し
+  if (buildPress.down && !buildPress.switched) {
+    buildPress.t += dt;
+    $('buildRing').style.borderColor = `rgba(255,255,255,${clamp(buildPress.t / LONG_PRESS, 0, 1)})`;
+    if (buildPress.t >= LONG_PRESS) { buildPress.switched = true; switchPart(); $('buildRing').style.borderColor = 'transparent'; }
+  }
+  if (G.buildMode) { G.buildIdle += dt; if (G.buildIdle > BUILD_MODE_TIMEOUT || !canAct()) G.buildMode = false; }
+
+  // --- 人 ---
+  for (const h of G.humans) {
+    if (h.state === 'out') continue;
+    h.stamina = Math.min(STAMINA_MAX, h.stamina + STAMINA_REGEN * dt);
+    h.swing = Math.max(0, h.swing - dt); h.safeFx -= dt;
+    if (h.state === 'ok') {
+      if (h.isPlayer) h.mv = playerMove(); else { h.ai.pathT -= dt; h.ai.qT -= dt; humanAI(h, dt); }
+      const m = Math.min(1, Math.hypot(h.mv.x, h.mv.z));
+      if (m > 0.05) { h.yaw = Math.atan2(h.mv.x, h.mv.z); moveBody(h, h.mv.x * HUMAN_SPEED * dt, h.mv.z * HUMAN_SPEED * dt); }
+      else h.blocked = -Infinity;
+      if (!h.isPlayer) { autoJump(h); checkStuck(h, dt); }
+    }
+    physics(h, dt);
+  }
+  // --- 鬼 ---
+  for (const o of G.onis) {
+    o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt);
+    if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, z: 0 } : playerMove(); else { o.ai.pathT -= dt; o.ai.qT -= dt; oniAI(o, dt); }
+    const sp = ONI[o.type].speed * (G.phase === 'night' ? 1 + FRUIT_BONUS * o.fruits : 1);
+    const m = Math.hypot(o.mv.x, o.mv.z);
+    if (o.stun <= 0 && m > 0.05) { o.yaw = Math.atan2(o.mv.x, o.mv.z); moveBody(o, o.mv.x * sp * dt, o.mv.z * sp * dt); o.walkT += dt * sp * m; }
+    else o.blocked = -Infinity;
+    if (!o.isPlayer && o.stun <= 0) { autoJump(o); checkStuck(o, dt); }
+    physics(o, dt);
+  }
+
+  // --- 箱 ---
+  for (const b of G.boxes) {
+    if (b.opened) continue;
+    const g = groundAt(b.x, b.z, 0.3);
+    if (b.y > g) { b.vy -= GRAVITY * dt; b.y = Math.max(g, b.y + b.vy * dt); if (b.y === g) { b.vy = 0; burst(b.x, g + 0.1, b.z, 0xd9b98a, 6); } continue; }
+    b.y = g;
+    for (const h of G.humans) if (h.state === 'ok' && hdist(h, b) < h.r + (b.big ? 0.8 : 0.4) && Math.abs(h.y - b.y) < 0.9) { openBox(b); break; }
+  }
+  G.boxes = G.boxes.filter((b) => !b.opened);
+
+  // --- 資材 ---
+  for (const it of G.items) {
+    it.age += dt; it.rot += it.spin * dt;
+    if (it.magnet && it.magnet.state === 'ok') {
+      const t = it.magnet, d = Math.hypot(t.x - it.x, t.y + 0.6 - it.y, t.z - it.z) || 1, s = Math.min(d, 14 * dt);
+      it.x += ((t.x - it.x) / d) * s; it.y += ((t.y + 0.6 - it.y) / d) * s; it.z += ((t.z - it.z) / d) * s;
+    } else {
+      it.magnet = null;
+      it.vy -= GRAVITY * dt;
+      const nx = it.x + it.vx * dt, nz = it.z + it.vz * dt;
+      if (cellTop(nx, it.z) > it.y + 0.1) it.vx *= -0.4; else it.x = nx;
+      if (cellTop(it.x, nz) > it.y + 0.1) it.vz *= -0.4; else it.z = nz;
+      it.y += it.vy * dt;
+      const g = Math.min(cellTop(it.x, it.z), 50);
+      if (it.y <= g) { it.y = g; if (it.vy < -2.5) it.vy = -it.vy * 0.42; else it.vy = 0; it.vx *= 0.75; it.vz *= 0.75; it.spin *= 0.8; }
+    }
+    if (it.age < 0.4) continue;
+    for (const h of G.humans) {
+      if (h.state !== 'ok' || hdist(h, it) > 0.62 || it.y < h.y - 0.5 || it.y > h.y + 1.8) continue;
+      h[it.type]++; it.taken = true;
+      if (h.isPlayer) addFx(h.x, h.y + 1.9, h.z, it.type === 'wood' ? '+木材' : '+石', it.type === 'wood' ? '#f0b97a' : '#e3e8ef');
+      break;
+    }
+  }
+  G.items = G.items.filter((it) => !it.taken);
+
+  // --- 力の実 ---
+  for (const f of G.fruits) {
+    f.bob += dt * 3;
+    for (const o of G.onis) {
+      if (o.fruits >= MAX_FRUITS || hdist(o, f) > o.r + 0.4 || o.y > 1) continue;
+      o.fruits++; f.taken = true; world.remove(f.mesh);
+      addFx(o.x, o.y + o.hgt + 0.3, o.z, `力の実 ${o.fruits}/${MAX_FRUITS}`, '#ff8a8a'); burst(f.x, f.y, f.z, 0xff6b6b, 10);
+      break;
+    }
+  }
+  G.fruits = G.fruits.filter((f) => !f.taken);
+
+  // --- 夜のルール ---
+  if (G.phase === 'night') {
+    for (const o of G.onis) for (const h of G.humans)
+      if (h.state === 'ok' && hdist(o, h) < o.r + h.r + 0.1 && h.y < o.y + o.hgt && o.y < h.y + h.hgt) tryFreeze(o, h);
+    for (const h of G.humans) {
+      if (h.state === 'frozen') {
+        const help = G.humans.some((a) => a !== h && a.state === 'ok' && hdist(a, h) < a.r + h.r + 0.35 && Math.abs(a.y - h.y) < 1.2);
+        h.thaw = help ? h.thaw + dt : Math.max(0, h.thaw - dt * 0.5);
+        if (h.thaw >= THAW_TIME) {
+          h.state = 'ok'; h.thaw = 0; G.stats.thaws++;
+          addFx(h.x, h.y + 2, h.z, '解凍!', '#7CFC9A'); burst(h.x, h.y + 1, h.z, 0x9bffc0, 14);
+          if (h.isPlayer) toast('解凍された！');
+          continue;
+        }
+        h.freezeTimer -= dt;
+        if (h.freezeTimer <= 0) eliminate(h, '脱落…');
+      } else if (h.state === 'ok') {
+        // 高鬼: 同じ足場に乗り続けると揺れて崩れる
+        const i = cellOf(h), col = cols[i], top = col[col.length - 1];
+        if (h.onGround && top && top.type === 'scaffold' && Math.abs(h.y - heights[i]) < 0.05) {
+          if (h.standBlock === top) h.standTime += dt; else { h.standBlock = top; h.standTime = 0; }
+          if (h.standTime >= SCAFFOLD_SAFE_TIME && top.crumble < 0) { top.crumble = SCAFFOLD_CRUMBLE_TIME; addFx(h.x, h.y + 2, h.z, '足場がグラグラ!', '#ffd34d'); }
+        } else if (h.onGround) { h.standBlock = null; h.standTime = 0; }
+      }
+    }
+    if (G.humans.every((h) => h.state === 'out')) { endGame('oni'); return; }
+  }
+
+  // --- ブロック ---
+  for (const b of G.blocks.slice()) {
+    b.shake = Math.max(0, b.shake - dt);
+    if (b.visY > b.base) { b.vy += GRAVITY * dt; b.visY = Math.max(b.base, b.visY - b.vy * dt); if (b.visY === b.base) b.vy = 0; }
+    if (b.crumble >= 0) { b.crumble -= dt; if (b.crumble <= 0) removeBlock(b); }
+  }
+
+  // --- 演出 ---
+  for (const p of G.parts) { p.t += dt; p.vy -= GRAVITY * 0.5 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
+  G.parts = G.parts.filter((p) => p.t < p.life);
+  for (const f of G.fx) f.t += dt;
+  G.fx = G.fx.filter((f) => { if (f.t > 1.1) { f.el.remove(); return false; } return true; });
+
+  // 昼夜の切り替え(3秒かけて暗くする)
+  const target = G.phase === 'night' ? 1 : 0;
+  if (nightK !== target) { nightK = clamp(nightK + (target ? dt : -dt) / 3, 0, 1); applyLighting(); }
+}
+
+function applyLighting() {
+  const k = nightK;
+  scene.background.set(SKY_DAY).lerp(_c.set(SKY_NIGHT), k);
+  scene.fog.color.copy(scene.background);
+  scene.fog.near = FOG_DAY[0] + (FOG_NIGHT[0] - FOG_DAY[0]) * k;
+  scene.fog.far = FOG_DAY[1] + (FOG_NIGHT[1] - FOG_DAY[1]) * k;
+  hemi.intensity = 0.9 - 0.6 * k; sun.intensity = 0.7 - 0.58 * k;
+  hemi.color.set(0xe4f3ff).lerp(_c.set(0x8aa0ff), k);
+  for (const l of lanternLights) l.intensity = 2.6 * k;
+}
+
+// =====================================================================
+// 見た目の同期・描画
+// =====================================================================
+function syncVisuals(time) {
+  // 人
+  for (const h of G.humans) {
+    const m = h.mesh;
+    if (h.state === 'out') { m.g.visible = false; continue; }
+    m.g.position.set(h.x, h.y, h.z); m.g.rotation.y = h.yaw;
+    m.ice.visible = h.state === 'frozen';
+    m.stick.visible = h.swing > 0; m.stick.rotation.y = h.swing > 0 ? (h.swing / 0.3 - 0.5) * 2.4 : 0;
+    const bob = h.state === 'ok' && h.onGround && Math.hypot(h.mv.x, h.mv.z) > 0.1 ? Math.abs(Math.sin(time / 90)) * 0.06 : 0;
+    m.g.position.y += bob;
+  }
+  // 鬼
+  for (const o of G.onis) {
+    const m = o.mesh;
+    m.g.position.set(o.x, o.y, o.z); m.g.rotation.y = o.yaw;
+    m.parts.rotation.x = o.swing > 0 ? Math.sin((o.swing / 0.3) * Math.PI) * 0.35 : 0;
+    const legs = m.g.userData.legs, sw = Math.sin(o.walkT * 3) * 0.5;
+    if (legs) legs.forEach((l, k) => (l.rotation.x = (k % 2 ? sw : -sw) * (k > 1 ? -1 : 1)));
+    m.stars.visible = o.stun > 0; m.stars.rotation.y = time / 200;
+  }
+  // 箱
+  let k = 0;
+  for (const b of G.boxes) {
+    if (b.big) { b.mesh.position.set(b.x, b.y, b.z); continue; }
+    _m.compose(_v.set(b.x, b.y + 0.25, b.z), _q.setFromEuler(_e.set(0, b.rot, 0)), _s.set(1, 1, 1)); POOL.crate.setMatrixAt(k++, _m);
+    if (k >= 600) break;
+  }
+  POOL.crate.count = k; POOL.crate.instanceMatrix.needsUpdate = true;
+  // 資材
+  let kw = 0, ks = 0;
+  for (const it of G.items) {
+    _m.compose(_v.set(it.x, it.y + 0.09, it.z), _q.setFromEuler(_e.set(0, it.rot, 0)), _s.set(1, 1, 1));
+    if (it.type === 'wood') { if (kw < 2500) POOL.wood.setMatrixAt(kw++, _m); } else if (ks < 2500) POOL.stone.setMatrixAt(ks++, _m);
+  }
+  POOL.wood.count = kw; POOL.stone.count = ks; POOL.wood.instanceMatrix.needsUpdate = POOL.stone.instanceMatrix.needsUpdate = true;
+  // 力の実
+  for (const f of G.fruits) { f.mesh.position.set(f.x, f.y + Math.sin(f.bob) * 0.1, f.z); f.mesh.rotation.y = f.bob * 0.5; }
+  // ブロック
+  for (const b of G.blocks) {
+    let ox = 0, oz = 0;
+    if (b.shake > 0 || b.crumble >= 0) { const a = b.crumble >= 0 ? 0.07 : 0.05; ox = rand(-a, a); oz = rand(-a, a); }
+    b.mesh.position.set(cX(b.i) + ox, b.visY + b.h / 2, cZ(b.i) + oz);
+  }
+  // パーティクル
+  let kp = 0;
+  for (const p of G.parts) {
+    const s = 1 - p.t / p.life;
+    _m.compose(_v.set(p.x, p.y, p.z), _q.identity(), _s.set(s, s, s)); POOL.part.setMatrixAt(kp, _m); POOL.part.setColorAt(kp, _c.set(p.color)); kp++;
+  }
+  POOL.part.count = kp; POOL.part.instanceMatrix.needsUpdate = true; if (POOL.part.instanceColor) POOL.part.instanceColor.needsUpdate = true;
+
+  // 建築プレビュー
+  const p = G.player;
+  if (G.buildMode && p.kind === 'human' && p.state === 'ok') {
+    const i = frontCell(p), part = PARTS[p.buildType], ok = canPlace(i, p.buildType);
+    if (i >= 0) {
+      G3.preview.visible = true; G3.preview.geometry = part.h === 2 ? GEO.box2 : GEO.box1;
+      G3.preview.position.set(cX(i), (obst[i] ? 0 : heights[i]) + part.h / 2, cZ(i));
+      MAT.preview.color.set(ok ? 0x7CFC9A : 0xff5a5a);
+    } else G3.preview.visible = false;
+  } else G3.preview.visible = false;
+  $('bBuild').classList.toggle('on', !!G.buildMode);
+
+  // カメラ(斜め後ろ上から追従)
+  let focus = G.player;
+  if (focus.kind === 'human' && focus.state === 'out') {
+    if (!G.spectate || G.spectate.state === 'out') G.spectate = G.humans.find((h) => h.state !== 'out') || focus;
+    focus = G.spectate;
+  }
+  G.cam.lerp(_v.set(focus.x, focus.y + 1.2, focus.z), 0.15);
+  // 木や小屋にさえぎられたらカメラを近づける
+  let f = 1;
+  for (let k = 1; k <= 24; k++) {
+    const t = k / 24, px = G.cam.x + Math.sin(camYaw) * CAM_DIST * t, pz = G.cam.z + Math.cos(camYaw) * CAM_DIST * t, py = G.cam.y + CAM_HEIGHT * t;
+    if (obstHeightAt(px, pz) > py - 0.3) { f = Math.max(0.25, (k - 1.5) / 24); break; }
+  }
+  camDistK += (f - camDistK) * (f < camDistK ? 0.4 : 0.08);
+  camera.position.set(G.cam.x + Math.sin(camYaw) * CAM_DIST * camDistK, G.cam.y + CAM_HEIGHT * camDistK, G.cam.z + Math.cos(camYaw) * CAM_DIST * camDistK);
+  camera.lookAt(G.cam);
+
+  // ランタンの光: カメラに近い人から順に割り当て
+  if (nightK > 0) {
+    const list = G.humans.filter((h) => h.state !== 'out').sort((a, b) => hdist(a, focus) - hdist(b, focus));
+    lanternLights.forEach((l, k2) => {
+      const h = list[k2];
+      if (h) { h.mesh.lantern.getWorldPosition(l.position); l.visible = true; } else l.position.set(0, -50, 0);
+    });
+  }
+  MAT.lantern.color.set(nightK > 0.3 ? 0xffe9a8 : 0xffd27a);
+}
+
+let camDistK = 1;
+const OB_HEIGHT = { [OB_FENCE]: 1.2, [OB_ROCK]: 0.9, [OB_TREE]: 3.0, [OB_HUT]: 3.6 };
+function obstHeightAt(x, z) {
+  const fx = Math.floor(x), fz = Math.floor(z);
+  if (!inField(fx, fz)) return 0;
+  const i = idx(fx, fz);
+  return obst[i] ? OB_HEIGHT[obst[i]] : heights[i];
+}
+
+// 頭上の表示(凍結タイマー・文字)
+function project(x, y, z) {
+  _v.set(x, y, z).project(camera);
+  if (_v.z > 1 || _v.z < -1) return null;
+  return { x: (_v.x + 1) / 2 * innerWidth, y: (1 - _v.y) / 2 * innerHeight };
+}
+function updateLabels() {
+  const focus = G.player.state === 'out' && G.spectate ? G.spectate : G.player;
+  for (const h of G.humans) {
+    if (h.state !== 'frozen' || hdist(h, focus) > (G.phase === 'night' ? 16 : 40)) { h.label.style.display = 'none'; continue; }
+    const p = project(h.x, h.y + 2.2, h.z);
+    if (!p) { h.label.style.display = 'none'; continue; }
+    h.label.style.display = 'block';
+    const t = Math.ceil(h.freezeTimer);
+    h.label.innerHTML = `<span style="color:${t <= 10 ? '#ff8787' : '#bdefff'}">❄${t}</span><div class="tb"><div style="width:${(h.thaw / THAW_TIME) * 100}%"></div></div>`;
+    h.label.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+  }
+  for (const f of G.fx) {
+    const p = project(f.x, f.y + f.t * 0.8, f.z);
+    if (!p) { f.el.style.display = 'none'; continue; }
+    f.el.style.display = 'block'; f.el.style.opacity = String(1 - f.t / 1.1);
+    f.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+  }
+}
+
+// ミニマップ
+let miniBase = null;
+function renderMinimapBase() {
+  miniBase = document.createElement('canvas'); miniBase.width = miniBase.height = N * 4;
+  const c = miniBase.getContext('2d');
+  c.fillStyle = '#4f8a45'; c.fillRect(0, 0, N * 4, N * 4);
+  const col = { [OB_FENCE]: '#8b5a2b', [OB_ROCK]: '#9aa1aa', [OB_TREE]: '#1f5e2a', [OB_HUT]: '#e8d6b0' };
+  for (let i = 0; i < N * N; i++) if (obst[i]) { c.fillStyle = col[obst[i]]; c.fillRect((i % N) * 4, ((i / N) | 0) * 4, 4, 4); }
+}
+function drawMinimap(time) {
+  const cv = $('minimap'), W = cv.width, s = W / N, c = cv.getContext('2d');
+  c.drawImage(miniBase, 0, 0, W, W);
+  if (nightK > 0) { c.fillStyle = `rgba(5,10,30,${0.55 * nightK})`; c.fillRect(0, 0, W, W); }
+  for (const b of G.blocks) if (b === cols[b.i][cols[b.i].length - 1]) {
+    c.fillStyle = b.type === 'wall' ? '#e2e6ea' : `hsl(30, 60%, ${35 + Math.min(heights[b.i], 6) * 6}%)`;
+    c.fillRect((b.i % N) * s, ((b.i / N) | 0) * s, s, s);
+  }
+  const dot = (x, z, r, col) => { c.fillStyle = col; c.beginPath(); c.arc(x * s, z * s, r, 0, TAU); c.fill(); };
+  const u = W / 120;
+  if (G.phase === 'day') {
+    for (const b of G.boxes) if (!b.big) dot(b.x, b.z, 1.2 * u, '#f0a050');
+    if (G.player.kind === 'oni') for (const f of G.fruits) dot(f.x, f.z, 1.8 * u, '#ff4d4d');
+  }
+  if (G.chest && Math.sin(time / 150) > -0.3) dot(G.chest.x, G.chest.z, 4 * u, '#ffd34d');
+  if (G.rain) { c.strokeStyle = '#ffd34d'; c.lineWidth = 1.5 * u; c.beginPath(); c.arc(G.rain.x * s, G.rain.z * s, G.rain.r * s, 0, TAU); c.stroke(); }
+  for (const h of G.humans) if (h.state !== 'out') dot(h.x, h.z, (h.isPlayer ? 3.2 : 2.4) * u, h.state === 'frozen' ? '#bdefff' : h.isPlayer ? '#fff' : '#4d9bff');
+  for (const o of G.onis) dot(o.x, o.z, (o.isPlayer ? 3.4 : 2.8) * u, o.isPlayer ? '#fff' : '#ff3b3b');
+  // カメラの向き
+  const p = G.player.state === 'out' && G.spectate ? G.spectate : G.player;
+  const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
+  c.strokeStyle = 'rgba(255,255,255,.85)'; c.lineWidth = 1.5 * u; c.beginPath();
+  c.moveTo(p.x * s, p.z * s); c.lineTo((p.x + fx * 6) * s, (p.z + fz * 6) * s); c.stroke();
+}
+
+// =====================================================================
+// HUD
+// =====================================================================
+function setupHUD(hide) {
+  const show = !hide && playing();
+  document.querySelectorAll('.hud').forEach((el) => (el.style.display = show ? '' : 'none'));
+  if (show) {
+    $('topbar').style.display = 'flex'; $('status').style.display = 'flex'; $('minimap').style.display = 'block'; $('buttons').style.display = 'block'; $('joy').style.display = 'block';
+    const human = G.player.kind === 'human';
+    ['bPick', 'bBuild', 'bHit'].forEach((id) => ($(id).style.display = human ? 'flex' : 'none'));
+    $('bAttack').style.display = human ? 'none' : 'flex';
+    $('buttons').classList.toggle('oni', !human);
+    resetJoy();
+    const md = Math.round(120 * Math.min(window.devicePixelRatio || 1, 2)); $('minimap').width = md; $('minimap').height = md;
+  }
+}
+function updateHUD() {
+  const night = G.phase === 'night';
+  const ph = $('phase'); ph.textContent = night ? '🌙 夜' : '☀ 昼'; ph.className = 'pill ' + (night ? 'night' : 'day');
+  $('timer').textContent = fmtTime(G.timeLeft);
+  $('alive').textContent = `人 ${G.humans.filter((h) => h.state !== 'out').length}/${HUMAN_COUNT}`;
+  const p = G.player;
+  let html;
+  if (p.kind === 'human') {
+    const st = p.state === 'out' ? '<span style="color:#ff8787">脱落・観戦中</span>'
+             : p.state === 'frozen' ? `<span style="color:#9be7ff">凍結中 ❄${Math.ceil(p.freezeTimer)}</span>` : '';
+    html = `<div class="row"><span class="wood">🪵 木材 ${p.wood}</span><span class="stone">🪨 石 ${p.stone}</span></div>
+      <div class="row">建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildMode ? ' <span style="color:#ffd34d">▶設置待ち</span>' : ''}</div>
+      <div class="row"><span style="font-size:11px">スタミナ</span><div class="bar"><div style="width:${(p.stamina / STAMINA_MAX) * 100}%"></div></div></div>
+      <div class="row" style="font-size:11px;color:#c8d3e6">高さ ${p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>`;
+    $('buildLabel').textContent = PARTS[p.buildType].name;
+  } else {
+    html = `<div class="row">${ONI[p.type].name}</div>
+      <div class="row">力の実 <span class="fruit">${'●'.repeat(p.fruits)}${'○'.repeat(MAX_FRUITS - p.fruits)}</span></div>
+      <div class="row" style="font-size:11px;color:#c8d3e6">夜の速さ +${Math.round(p.fruits * FRUIT_BONUS * 100)}%</div>`;
+  }
+  const s = $('status'); if (s._h !== html) { s.innerHTML = html; s._h = html; }
+}
+
+// =====================================================================
+// 画面
+// =====================================================================
+function showScreen(html) {
+  const el = $('screen');
+  if (html === null) { el.className = 'hidden'; el.innerHTML = ''; return; }
+  el.className = ''; el.innerHTML = html;
+}
+function showTitle() {
+  scene_ = 'title'; setupHUD(true);
+  showScreen(`<h1>建築鬼ごっこ<small>3D</small></h1>
+    <p>昼に資材を集めてブロックを積み、夜は鬼から逃げ切れ！　高鬼 × 氷鬼 × 建築</p>
+    <p class="tap">タップしてスタート</p>`);
+}
+function showSide() {
+  scene_ = 'side';
+  showScreen(`<h2>陣営をえらぶ</h2>
+    <div class="row2">
+      <button class="choice c-human" data-act="human">🧑 人<span>資材を集めて足場を積む。<br>夜明けまで1人でも生き残れば勝ち</span></button>
+      <button class="choice c-oni" data-act="oni">👹 鬼<span>夜に人をタッチして凍らせる。<br>全員を脱落させれば勝ち</span></button>
+    </div>`);
+}
+function showOniType() {
+  scene_ = 'oniType';
+  showScreen(`<h2>鬼の種類をえらぶ</h2>
+    <div class="row2">
+      <button class="choice c-carn" data-act="carnivore">🐺 肉食動物<span>四足歩行で足が速い。ジャンプは低い。<br>建物への攻撃は弱い。高い場所の人にはタッチできない</span></button>
+      <button class="choice c-mons" data-act="monster">👹 モンスター<span>大きくて遅い。壁・足場を1〜2回で壊す。<br>高さ1までの人にタッチできる</span></button>
+    </div>
+    <button class="choice c-plain" data-act="back">← もどる</button>`);
+}
+$('screen').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]'), act = b ? b.dataset.act : '';
+  if (scene_ === 'title') { tryFullscreen(); showSide(); return; }
+  if (act === 'human') { playerSide = 'human'; startGame(); }
+  else if (act === 'oni') { playerSide = 'oni'; showOniType(); }
+  else if (act === 'carnivore' || act === 'monster') { playerOniType = act; startGame(); }
+  else if (act === 'back' || act === 'again') showSide();
+  else if (act === 'title') showTitle();
+});
+function tryFullscreen() {
+  try {
+    const el = document.documentElement, p = el.requestFullscreen && el.requestFullscreen({ navigationUI: 'hide' });
+    if (p && p.then) p.then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(() => {})).catch(() => {});
+  } catch (_) {}
+}
+
+// =====================================================================
+// 画面サイズ・向き
+// =====================================================================
+let portrait = false;
+function onResize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  portrait = innerHeight > innerWidth;
+  $('rotate').style.display = portrait ? 'flex' : 'none';
+  if (playing()) resetJoy();
+}
+
+// ズーム・スクロール・長押しメニューを無効化
+['gesturestart', 'gesturechange', 'dblclick', 'contextmenu', 'selectstart'].forEach((ev) => document.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('touchstart', (e) => { if (e.touches.length > 1 && !e.target.closest('.btn')) e.preventDefault(); }, { passive: false });
+
+// =====================================================================
+// 起動・メインループ
+// =====================================================================
+init3D();
+const cv = renderer.domElement;
+cv.addEventListener('pointerdown', onPointerDown);
+window.addEventListener('pointermove', onPointerMove);
+window.addEventListener('pointerup', onPointerUp);
+window.addEventListener('pointercancel', onPointerUp);
+window.addEventListener('resize', onResize);
+onResize();
+showTitle();
+
+let lastT = performance.now();
+function frame(t) {
+  const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
+  try {
+    if (G && playing() && !portrait) update(dt);
+    if (G && (playing() || scene_ === 'result')) {
+      syncVisuals(t);
+      renderer.render(scene, camera);
+      if (playing()) { updateHUD(); updateLabels(); drawMinimap(t); }
+    } else {
+      renderer.setClearColor(0x0d1320); renderer.clear();
+    }
+  } catch (err) { console.error(err); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
