@@ -104,6 +104,8 @@
   .c-oni   { background: linear-gradient(160deg, #d9483b, #962a20); }
   .c-carn  { background: linear-gradient(160deg, #e0832f, #a3521a); }
   .c-mons  { background: linear-gradient(160deg, #9b46c9, #5f2486); }
+  .c-forest  { background: linear-gradient(160deg, #3f9a4a, #24642d); }
+  .c-factory { background: linear-gradient(160deg, #7d8590, #4a5059); }
   .c-plain { background: linear-gradient(160deg, #3a4a66, #263247); font-size: 16px; padding: 10px; }
   .tap { animation: blink 1.2s infinite; font-weight: 800; font-size: 18px; color: #fff !important; margin-top: 10px !important; }
   @keyframes blink { 50% { opacity: .25; } }
@@ -189,7 +191,7 @@ const FIELD_SIZE = 60;        // フィールドの大きさ(マス)
 
 // ---- ラウンド・部屋 ----
 const NIGHT_COUNT = 1;        // 建築→鬼ごっこを1ラウンドとして何回くり返すか(1=1ラウンドで決着)
-const ROOM_COUNT = 2;         // 部屋の数(最大4。STEP1は2)
+const ROOM_COUNT = 1;         // 部屋(ステージ)の数。1=選んだステージだけで遊ぶ(2以上にすると通路でつながった部屋になる)
 const RESCUE_OPEN = 30;       // 夜開始から、鬼のいない部屋の通路が開くまで(秒)
 const HUMAN_ROOM_CAP = 4;     // 1部屋に入れる人の定員
 const ONI_ROOM_CAP = 2;       // 鬼が分かれるときの1部屋の定員
@@ -234,7 +236,7 @@ const LONG_PRESS = 0.45;             // 長押し判定(秒)
 
 // ---- キャラ ----
 const GRAVITY = 22;
-const HUMAN_SPEED = 4.2, HUMAN_JUMP = 1.3;  // ジャンプの高さ1.3 → 1段だけ登れる
+const HUMAN_SPEED = 6.0, HUMAN_JUMP = 1.3;  // ジャンプの高さ1.3 → 1段だけ登れる
 const HUMAN_R = 0.3, HUMAN_H = 1.6;
 const ONI = {
   carnivore: { name: '🐯 虎(肉食動物)', speed: 5.0, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
@@ -311,6 +313,7 @@ const DIVW = 2;
 const ROOM_W = Math.floor((N - 2 - (ROOM_COUNT - 1) * DIVW) / ROOM_COUNT);
 const PASSAGES = [Math.round(N * 0.25), Math.round(N * 0.75)].map((c) => [c - 1, c, c + 1]);
 let ROOMS = [];
+let selectedStage = 0; // ステージ選択画面で選んだステージ(ROOM_DEFSの番号)
 const roomOfX = new Int8Array(N).fill(-1);
 function makeRooms() {
   roomOfX.fill(-1); ROOMS = [];
@@ -318,7 +321,7 @@ function makeRooms() {
     const x0 = 1 + k * (ROOM_W + DIVW), x1 = x0 + ROOM_W - 1, cx = Math.floor((x0 + x1) / 2);
     for (let x = x0; x <= x1; x++) roomOfX[x] = k;
     // door: 北の柵にある扉(鬼の入口・救援ランプ)  home: 人の集合場所
-    ROOMS.push(Object.assign({}, ROOM_DEFS[k % ROOM_DEFS.length], { k, x0, x1, cx, door: { x: cx, z: 2 }, home: { x: cx, z: Math.floor(N * 0.55) } }));
+    ROOMS.push(Object.assign({}, ROOM_DEFS[(k + selectedStage) % ROOM_DEFS.length], { k, x0, x1, cx, door: { x: cx, z: 2 }, home: { x: cx, z: Math.floor(N * 0.55) } }));
   }
 }
 const roomAt = (x) => (x >= 0 && x < N ? roomOfX[x] : -1);
@@ -359,16 +362,17 @@ function genForest(F, reserved) {
     for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) obst[idx(x + dx, z + dz)] = OB_HUT;
     huts.push({ x, z, rot: randInt(0, 3) }); n++;
   }
-  for (let i = 0; i < 22 * scale; i++) {
+  for (let i = 0; i < 14 * scale; i++) {
     let x = randInt(F.x0, F.x1), z = randInt(2, N - 3);
     for (let k = 0, n = randInt(1, 3); k < n; k++) {
       if (x >= F.x0 && x <= F.x1 && z > 0 && z < N - 1 && !reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_ROCK;
       const d = DIRS4[randInt(0, 3)]; x += d[0]; z += d[1];
     }
   }
-  for (let i = 0; i < 420 * scale; i++) {
+  const nearTree = (x, z) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) if (obst[idx(x + dx, z + dz)] === OB_TREE) return true; return false; };
+  for (let i = 0; i < 160 * scale; i++) { // 木どうしは1マス以上あける
     const x = randInt(F.x0, F.x1), z = randInt(1, N - 2);
-    if (!reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_TREE;
+    if (!reserved(x, z) && !obst[idx(x, z)] && !nearTree(x, z)) obst[idx(x, z)] = OB_TREE;
   }
 }
 // ---- 廃工場: 4×4の小部屋が並ぶ迷路(狭い通路と壁) ----
@@ -692,6 +696,7 @@ function buildFieldMeshes() {
     addBox(g, MAT.doorFrame, 0.14, 2.6, 0.14, 0, 4.6, 0);
     const mat = basic(0x3a2222, { fog: false });
     const lamp = new THREE.Mesh(GEO.sphere, mat); lamp.scale.setScalar(0.55); lamp.position.y = 6.1; g.add(lamp);
+    lamp.visible = ROOM_COUNT > 1; // ステージが1つなら救援ランプは不要
     world.add(g);
     return { mat, on: false };
   });
@@ -1133,6 +1138,13 @@ function cpuOniChoose(o) {
   o.vote = (free.length ? free[randInt(0, free.length - 1)] : ROOMS[randInt(0, ROOM_COUNT - 1)]).k;
 }
 function startSelect() {
+  if (ROOM_COUNT === 1) { // ステージは1つ: 全員そのステージへ
+    for (const h of G.humans) h.pick = 0;
+    for (const o of G.onis) { o.vote = 0; o.boost = o.isPlayer ? null : Object.keys(BOOSTS)[randInt(0, 2)]; o.entered = false; o.mesh.g.visible = false; o.x = 2; o.z = 2; }
+    G.phase = 'select'; scene_ = 'select'; G.buildMode = false;
+    startDay();
+    return;
+  }
   G.phase = 'select'; scene_ = 'select'; G.selectT = ROOM_SELECT_TIME; G.timeLeft = ROOM_SELECT_TIME;
   for (const h of G.humans) { h.pick = -1; h.pickAt = h.isPlayer ? Infinity : rand(0.8, ROOM_SELECT_TIME - 1.5); }
   for (const o of G.onis) { o.vote = null; o.boost = null; o.entered = false; o.mesh.g.visible = false; o.x = 2; o.z = 2; }
@@ -2633,6 +2645,14 @@ function showTitle() {
     <p>資材を集めてブロックを積み、鬼から逃げ切れ！　高鬼 × 氷鬼 × 建築</p>
     <p class="tap">タップしてスタート</p>`);
 }
+function showStage() {
+  scene_ = 'stage';
+  showScreen(`<h2>ステージをえらぶ</h2>
+    <div class="row2">
+      ${ROOM_DEFS.slice(0, 2).map((d, k) => `<button class="choice ${d.terrain === 'forest' ? 'c-forest' : 'c-factory'}" data-act="stage:${k}">${d.icon} ${d.name}<span>${d.desc}</span></button>`).join('')}
+    </div>
+    <button class="choice c-plain" data-act="back">← もどる</button>`);
+}
 function showSide() {
   scene_ = 'side';
   showScreen(`<h2>陣営をえらぶ</h2>
@@ -2656,11 +2676,13 @@ function renderWait() {
         <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 赤鬼(モンスター)<span>金棒で正面3×3×高さ2をまとめて壊す(待ち時間1.5倍)。高さ1まで届く</span></button>
         <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ。斜め下へ凍結ビームを連射(自動ロックオン)。建物は壊せない</span></button>
       </div>
+      ${ROOM_COUNT === 1 ? `<div class="wcol"><h3>2. ステージ</h3><div class="wbtn sel">${ROOMS[0].icon} ${ROOMS[0].name}<span>${ROOMS[0].desc}</span></div></div><div style="display:none">` : ''}
       <div class="wcol"><h3>2. ${split ? `部屋をえらぶ（定員${ONI_ROOM_CAP}匹）` : '部屋に投票'}</h3>
         ${ROOMS.map((r) => { const full = split && oniPop(r.k, p) >= ONI_ROOM_CAP;
           return `<button class="wbtn${sel(p.vote === r.k)}" data-w="vote:${r.k}" ${full ? 'disabled' : ''}>${r.icon} ${r.name}<span>${r.desc}</span>${split ? `<span class="who">鬼 ${oniPop(r.k, p) + (p.vote === r.k ? 1 : 0)}/${ONI_ROOM_CAP}</span>` : ''}</button>`; }).join('')}
         <div class="mates">${split ? `鬼が${ONI_SPLIT_MIN}匹以上なので各自で部屋を選ぶ` : '鬼全員の投票で1部屋に決定（同数ならランダム）'}</div>
       </div>
+      ${ROOM_COUNT === 1 ? '</div>' : ''}
       <div class="wcol"><h3>3. 強化を1つ</h3>
         ${Object.entries(BOOSTS).map(([k, b]) => `<button class="wbtn${sel(p.boost === k)}" data-w="boost:${k}">${b.name}<span>${b.desc}</span></button>`).join('')}
       </div>
@@ -2712,8 +2734,9 @@ $('screen').addEventListener('click', (e) => {
   const b = e.target.closest('[data-act]'), act = b ? b.dataset.act : '';
   initAudio();
   if (scene_ === 'title') { tryFullscreen(); showSide(); return; }
-  if (act === 'human') { playerSide = 'human'; startGame(); }
-  else if (act === 'oni') { playerSide = 'oni'; startGame(); } // 鬼の種類は待機ルームで選ぶ
+  if (act === 'human') { playerSide = 'human'; ROOM_COUNT === 1 ? showStage() : startGame(); }
+  else if (act === 'oni') { playerSide = 'oni'; ROOM_COUNT === 1 ? showStage() : startGame(); } // 鬼の種類は待機ルームで選ぶ
+  else if (act && act.startsWith('stage:')) { selectedStage = +act.split(':')[1]; startGame(); }
   else if (act === 'carnivore' || act === 'monster') { playerOniType = act; startGame(); }
   else if (act === 'back' || act === 'again') showSide();
   else if (act === 'title') showTitle();
