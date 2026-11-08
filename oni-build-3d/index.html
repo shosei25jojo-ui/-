@@ -180,7 +180,7 @@
 // 調整用の定数
 // =====================================================================
 const DAY_TIME = 90;          // 昼フェーズの長さ(秒)
-const NIGHT_TIME = 120;       // 夜フェーズの長さ(秒)
+const NIGHT_TIME = 120;       // 鬼ごっこフェーズの長さ(秒)
 const FREEZE_LIMIT = 30;      // 凍結してから脱落するまでの秒数
 const MAX_FREEZE_COUNT = 3;   // この回数凍結した人は、次のタッチで即脱落
 const HUMAN_COUNT = 6;        // 人の数
@@ -188,7 +188,7 @@ const ONI_COUNT = 2;          // 鬼の数
 const FIELD_SIZE = 60;        // フィールドの大きさ(マス)
 
 // ---- ラウンド・部屋 ----
-const NIGHT_COUNT = 3;        // 昼→夜を1ラウンドとして何回くり返すか
+const NIGHT_COUNT = 1;        // 建築→鬼ごっこを1ラウンドとして何回くり返すか(1=1ラウンドで決着)
 const ROOM_COUNT = 2;         // 部屋の数(最大4。STEP1は2)
 const RESCUE_OPEN = 30;       // 夜開始から、鬼のいない部屋の通路が開くまで(秒)
 const HUMAN_ROOM_CAP = 4;     // 1部屋に入れる人の定員
@@ -263,7 +263,7 @@ const ONI_TYPES = ['carnivore', 'monster', 'alien'];
 
 // ---- 表示 ----
 const CAM_DIST = 7.5, CAM_HEIGHT = 4.2, CAM_ROT_SPEED = 0.007;
-const MAX_LANTERN_LIGHTS = 3;        // 実際に光らせるランタンの数(軽さ優先)
+const MAX_LANTERN_LIGHTS = 0;        // ライトは使わない(夜の暗さをなくしたため)
 const SKY_DAY = 0x9ed6ff, SKY_NIGHT = 0x05070f;
 const FOG_DAY = [35, 85], FOG_NIGHT = [4, 19];
 
@@ -503,7 +503,7 @@ function seekPred(e, key, pred, maxUp, maxDepth) {
 // Three.js 準備
 // =====================================================================
 let renderer, scene, camera, hemi, sun, world, lanternLights = [], oniLights = [];
-const MAX_ONI_LIGHTS = 2;
+const MAX_ONI_LIGHTS = 0;            // 鬼の目・UFOのライトもなし
 const GEO = {}, MAT = {};
 const _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _c = new THREE.Color(), _e = new THREE.Euler();
 
@@ -758,8 +758,7 @@ function makeHumanMesh(color, isPlayer) {
   const head = new THREE.Mesh(GEO.head, MAT.skin); head.position.y = 1.3; g.add(head);
   addBox(g, MAT.dark, 0.06, 0.08, 0.04, -0.09, 1.34, 0.24); addBox(g, MAT.dark, 0.06, 0.08, 0.04, 0.09, 1.34, 0.24);
   addBox(g, mat, 0.56, 0.1, 0.56, 0, 1.52, 0); // 帽子
-  const lantern = new THREE.Mesh(GEO.lantern, MAT.lantern); lantern.position.set(0.36, 0.72, 0.18); g.add(lantern);
-  addBox(g, MAT.dark, 0.03, 0.22, 0.03, 0.36, 0.86, 0.18);
+  const lantern = new THREE.Object3D(); lantern.position.set(0.36, 0.72, 0.18); g.add(lantern); // ランタンはなし(位置だけ)
   const stick = new THREE.Group(); stick.position.set(-0.3, 0.9, 0); stick.visible = false;
   addBox(stick, lam(0x8b5a2b), 0.09, 0.09, 0.9, 0, 0, 0.45); g.add(stick);
   const ice = new THREE.Mesh(GEO.ice, MAT.ice); ice.position.y = 0.88; ice.visible = false; g.add(ice);
@@ -911,14 +910,11 @@ function makeOniMesh(type) {
     addSphere(parts, MAT.eye, 0.07, -0.1, 0.78, 0.22); addSphere(parts, MAT.eye, 0.07, 0.1, 0.78, 0.22);
     const dome = new THREE.Mesh(GEO.sphere, MAT.dome); dome.scale.set(0.62, 0.55, 0.62); dome.position.y = 0.55; parts.add(dome);
     for (let k = 0; k < 6; k++) { const a = (k / 6) * TAU; addSphere(parts, MAT.eye, 0.08, Math.cos(a) * 0.95, 0.12, Math.sin(a) * 0.95); }
-    const searchCone = new THREE.Mesh(GEO.ufoCone, MAT.ufoLight); g.add(searchCone);
-    const searchDisc = new THREE.Mesh(GEO.ufoDisc, MAT.ufoSpot); g.add(searchDisc);
-    g.userData.searchCone = searchCone; g.userData.searchDisc = searchDisc;
     const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.45, BEAM_RADIUS, 1, 18, 1, true), MAT.ufoBeam.clone()); beam.visible = false; g.add(beam);
     g.userData.beam = beam;
   }
   if (type !== 'alien') { // 目から前方へライト
-    const eyeLight = new THREE.Mesh(GEO.eyeCone, MAT.eyeBeam);
+    const eyeLight = new THREE.Object3D(); // 目のライトはなし(位置だけ)
     const tilt = type === 'monster' ? 0.38 : 0.18;
     if (res.rig) res.rig.eye.add(eyeLight); else { eyeLight.position.set(0, ONI[type].h * 0.85, 0.35); parts.add(eyeLight); }
     eyeLight.rotation.x = tilt;
@@ -1151,7 +1147,7 @@ function updateSelect(dt) {
   for (const h of G.humans) if (h.state !== 'out' && h.pick < 0 && elapsed >= h.pickAt) cpuPick(h);
   const alive = G.humans.filter((h) => h.state !== 'out');
   if (alive.every((h) => h.pick >= 0)) G.selectT = Math.min(G.selectT, 1.2); // 全員決まったら少し待って開始
-  if (G.player.kind === 'oni') { const w = $('waitTime'); if (w) w.textContent = '夜まで ' + fmtTime(G.selectT + DAY_TIME); }
+  if (G.player.kind === 'oni') { const w = $('waitTime'); if (w) w.textContent = '鬼ごっこまで ' + fmtTime(G.selectT + DAY_TIME); }
   else renderSelect();
   if (G.selectT <= 0) {
     for (const h of alive) if (h.pick < 0) cpuPick(h); // 選ばなかった人は空いている部屋へ
@@ -1169,7 +1165,7 @@ function startDay() {
   setupHUD();
   if (G.player.kind === 'human') {
     const r = ROOMS[G.player.room];
-    if (G.player.state !== 'out') telop(`☀ ${G.round}日目: ${r.icon}${r.name}で資材を集め、足場を積もう！（夜は${G.round}/${NIGHT_COUNT}回目）`, 'blue');
+    if (G.player.state !== 'out') telop(`🔨 建築タイム: ${r.icon}${r.name}で資材を集め、足場を積もう！`, 'blue');
   } else renderWait();
 }
 // 集合場所の近くに並べる
@@ -1240,9 +1236,9 @@ function startNight() {
   const f = focusOf();
   if (G.player.kind === 'oni') {
     const r = ROOMS[G.player.room];
-    telop(`🌙 第${G.round}夜: 鬼が「${r.icon} ${r.name}」の部屋を選んだ！ 扉から突入！`, '');
+    telop(`👹 鬼ごっこ開始！ 「${r.icon} ${r.name}」の部屋を選んだ！ 扉から突入！`, '');
     camYaw = Math.PI;
-  } else telop(`🌙 第${G.round}夜: 鬼がどこかの部屋にやってくる…`, '');
+  } else telop(`👹 鬼ごっこ開始！ 鬼がどこかの部屋にやってくる…`, '');
   G.cam.set(f.x, f.y + 1.2, f.z);
   setupHUD();
 }
@@ -1265,7 +1261,7 @@ function endNight() {
   for (const o of G.onis) { o.entered = false; o.mesh.g.visible = false; }
   G.oniRooms = [];
   G3.lamps.forEach((L) => (L.on = false));
-  telop(`☀ 夜が明けた！ 全員が自分の部屋にもどった（残り${NIGHT_COUNT - G.round + 1}夜）`, 'blue');
+  telop(`⏱ ラウンド終了！ 全員が自分の部屋にもどった（残り${NIGHT_COUNT - G.round + 1}ラウンド）`, 'blue');
   startSelect();
 }
 
@@ -1276,7 +1272,7 @@ function endGame(winner) {
   setupHUD(true);
   showScreen(`
     <div class="result-big ${youWin ? 'win' : 'lose'}">${youWin ? '🏆 勝利！' : '敗北…'}</div>
-    <h2>${winner === 'human' ? `人チームの勝ち（${NIGHT_COUNT}夜を生きのびた）` : `鬼チームの勝ち（第${G.round}夜で全員脱落）`}</h2>
+    <h2>${winner === 'human' ? `人チームの勝ち（制限時間まで生きのびた）` : `鬼チームの勝ち（全員脱落）`}</h2>
     <div class="stats">生き残った人 <b>${alive} / ${HUMAN_COUNT}</b>　凍結 <b>${G.stats.freezes}</b>回　解凍 <b>${G.stats.thaws}</b>回（うち救援 <b>${G.stats.rescues}</b>回）<br>
       建てたブロック <b>${G.stats.built}</b>個　鬼を叩いた回数 <b>${G.stats.hits}</b></div>
     <div class="row2"><button class="choice c-human" data-act="again">もう一度遊ぶ</button><button class="choice c-plain" data-act="title">タイトルへ</button></div>
@@ -2098,13 +2094,13 @@ function checkStuck(e, dt) {
 // =====================================================================
 function update(dt) {
   // 昼夜の切り替え(3秒かけて暗くする)
-  const target = G.phase === 'night' ? 1 : 0;
+  const target = 0; // 夜の暗さはなし(いつも明るい)
   if (nightK !== target) { nightK = clamp(nightK + (target ? dt : -dt) / 3, 0, 1); applyLighting(); }
   if (G.phase === 'select') { updateSelect(dt); return; }
   G.timeLeft -= dt;
   if (G.phase === 'day') {
     G.dayElapsed += dt;
-    if (G.player.kind === 'oni') { const w = $('waitTime'); if (w) w.textContent = '夜まで ' + fmtTime(G.timeLeft); }
+    if (G.player.kind === 'oni') { const w = $('waitTime'); if (w) w.textContent = '鬼ごっこまで ' + fmtTime(G.timeLeft); }
     if (G.dayElapsed >= G.nextEvent && G.nextEvent < DAY_TIME) { triggerEvent(); G.nextEvent += EVENT_INTERVAL; }
     if (G.rain) { G.rain.t -= dt; if (G.rain.t <= 0) { world.remove(G.rain.mesh); G.rain = null; } }
     if (G.timeLeft <= 0) { startNight(); return; }
@@ -2350,9 +2346,6 @@ function syncVisuals(time) {
       m.parts.position.y += Math.sin(time / 300) * 0.08; m.parts.rotation.y = time / 900;
       const beam = m.g.userData.beam, len = Math.max(0.5, o.y - groundAt(o.x, o.z, 0.1, o.y));
       beam.visible = false;
-      // 常についているサーチライト
-      m.g.userData.searchCone.scale.set(1, len, 1); m.g.userData.searchCone.position.y = 0.2;
-      m.g.userData.searchDisc.position.y = -len + 0.25;
     }
   }
   // 箱
@@ -2602,7 +2595,7 @@ function setupHUD(hide) {
 }
 function updateHUD() {
   const night = G.phase === 'night';
-  const ph = $('phase'); ph.textContent = night ? `🌙 第${G.round}夜` : `☀ 昼 ${G.round}/${NIGHT_COUNT}`; ph.className = 'pill ' + (night ? 'night' : 'day');
+  const ph = $('phase'); ph.textContent = night ? '👹 鬼ごっこ' : '🔨 建築'; ph.className = 'pill ' + (night ? 'night' : 'day');
   $('timer').textContent = fmtTime(G.timeLeft);
   $('alive').textContent = `人 ${G.humans.filter((h) => h.state !== 'out').length}/${HUMAN_COUNT}`;
   const p = G.player;
@@ -2637,15 +2630,15 @@ function showScreen(html) {
 function showTitle() {
   scene_ = 'title'; setupHUD(true);
   showScreen(`<h1>建築鬼ごっこ<small>3D</small></h1>
-    <p>昼に資材を集めてブロックを積み、夜は鬼から逃げ切れ！　高鬼 × 氷鬼 × 建築</p>
+    <p>資材を集めてブロックを積み、鬼から逃げ切れ！　高鬼 × 氷鬼 × 建築</p>
     <p class="tap">タップしてスタート</p>`);
 }
 function showSide() {
   scene_ = 'side';
   showScreen(`<h2>陣営をえらぶ</h2>
     <div class="row2">
-      <button class="choice c-human" data-act="human">🧑 人<span>部屋を選んで資材を集め、足場を積む。<br>${NIGHT_COUNT}回の夜を1人でも生きのびれば勝ち</span></button>
-      <button class="choice c-oni" data-act="oni">👹 鬼<span>昼は待機ルームで種類・部屋・強化を選び、<br>夜に人をタッチして凍らせる。全員脱落で勝ち</span></button>
+      <button class="choice c-human" data-act="human">🧑 人<span>部屋を選んで資材を集め、足場を積む。<br>鬼ごっこの制限時間まで1人でも生きのびれば勝ち</span></button>
+      <button class="choice c-oni" data-act="oni">👹 鬼<span>建築タイムは待機ルームで種類・部屋・強化を選び、<br>鬼ごっこで人を凍らせる。全員脱落で勝ち</span></button>
     </div>`);
 }
 function renderWait() {
@@ -2655,8 +2648,8 @@ function renderWait() {
   const sel = (on) => (on ? ' sel' : '');
   const toNight = G.phase === 'select' ? G.selectT + DAY_TIME : G.timeLeft;
   $('wait').innerHTML = `
-    <div class="wtop"><h2>👹 鬼の待機ルーム（第${G.round}夜の準備）</h2><div class="pill" id="waitTime">夜まで ${fmtTime(toNight)}</div></div>
-    <p class="note">人たちは部屋に分かれて資材集め・建築中…（各部屋の人数も建築も鬼からは見えない）。夜になったら選んだ部屋の扉から突入！</p>
+    <div class="wtop"><h2>👹 鬼の待機ルーム</h2><div class="pill" id="waitTime">鬼ごっこまで ${fmtTime(toNight)}</div></div>
+    <p class="note">人たちは部屋に分かれて資材集め・建築中…（各部屋の人数も建築も鬼からは見えない）。鬼ごっこが始まったら選んだ部屋の扉から突入！</p>
     <div class="wcols">
       <div class="wcol"><h3>1. 鬼の種類</h3>
         <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐯 虎(肉食動物)<span>足が速い。高い場所の人にはタッチできない。正面の1ブロックを一撃で壊す</span></button>
@@ -2672,7 +2665,7 @@ function renderWait() {
         ${Object.entries(BOOSTS).map(([k, b]) => `<button class="wbtn${sel(p.boost === k)}" data-w="boost:${k}">${b.name}<span>${b.desc}</span></button>`).join('')}
       </div>
     </div>
-    <div class="mates">${mates}${p.vote === null || !p.boost ? '<br>選ばなかった項目は夜にランダムで決まります' : '<br>✅ 準備完了！ 夜を待とう'}</div>`;
+    <div class="mates">${mates}${p.vote === null || !p.boost ? '<br>選ばなかった項目は鬼ごっこ開始時にランダムで決まります' : '<br>✅ 準備完了！ 鬼ごっこを待とう'}</div>`;
 }
 // 人の部屋選択画面(早い者勝ち・定員制)
 function renderSelect() {
