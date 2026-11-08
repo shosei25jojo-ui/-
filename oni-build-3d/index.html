@@ -189,8 +189,8 @@
 // 調整用の定数
 // =====================================================================
 const DAY_TIME = 90;          // 昼フェーズの長さ(秒)
-const NIGHT_TIME = 120;       // 鬼ごっこフェーズの長さ(秒)
-const FREEZE_LIMIT = 30;      // 凍結してから脱落するまでの秒数
+const NIGHT_TIME = 90;        // 鬼ごっこフェーズの長さ(秒)
+const FREEZE_LIMIT = 45;      // 凍結してから脱落するまでの秒数
 const MAX_FREEZE_COUNT = 3;   // この回数凍結した人は、次のタッチで即脱落
 const HUMAN_COUNT = 6;        // 人の数
 const ONI_COUNT = 2;          // 鬼の数
@@ -266,6 +266,8 @@ const DUST_MAX = 20;                 // 同時に出せる土煙の数(スマホ
 const atkCooldown = (o) => ONI_ATTACK_COOLDOWN * (o.type === 'monster' ? 1.5 : 1);
 // ---- 宇宙人(UFO) ----
 const BEAM_RATE = 0.15;              // 凍結ビームの連射間隔(秒)。押している間ずっと撃つ
+const BEAM_HITS_TO_FREEZE = 4;       // 凍らせるのに必要な命中数(当たらない時間が続くと1秒に1ずつ減る)
+const UFO_FREEZE_CD = 5;             // ビームで凍らせたあと、次に凍らせられるまでの秒数
 const BEAM_RANGE = 16;               // ビームの届く距離
 const BEAM_MIN_DOWN = 0.3;           // ビームは必ず斜め下へ(下向き成分の最小値)
 const BEAM_BREAK_TIME = 1;           // ビームを当て続けて建物を壊す時間(1マスあたり秒。壁は2マスなので2秒)
@@ -1765,8 +1767,14 @@ function fireBolt(o) {
   }
   G.bolts.push({ x: ox, y: oy, z: oz, d, len: Math.max(0.3, t), t: 0 });
   const ex = ox + d.x * t, ey = oy + d.y * t, ez = oz + d.z * t;
-  if (hitH) freezeByBeam(o, hitH);
-  else if (hitB || hitT >= 0) burst(ex, ey, ez, 0x9ff3ff, 2); // UFOは建物を壊せない(ビームは止まるだけ)
+  if (hitH) {
+    if (o.freezeCd > 0) burst(ex, ey, ez, 0x9ff3ff, 2); // 充電中: 当たっても凍らない
+    else {
+      hitH.beamHits = (hitH.beamHits || 0) + 1;
+      if (hitH.beamHits >= BEAM_HITS_TO_FREEZE) { hitH.beamHits = 0; freezeByBeam(o, hitH); o.freezeCd = UFO_FREEZE_CD; }
+      else { burst(ex, ey, ez, 0xc9f3ff, 5); if (hitH.isPlayer) toast(`❄ ビームが当たった！(${hitH.beamHits}/${BEAM_HITS_TO_FREEZE})`); }
+    }
+  } else if (hitB || hitT >= 0) burst(ex, ey, ez, 0x9ff3ff, 2); // UFOは建物を壊せない(ビームは止まるだけ)
   else burst(ex, Math.max(0.05, ey), ez, 0x9ff3ff, 1);
   startAnim(o);
 }
@@ -2330,7 +2338,7 @@ function update(dt) {
   for (const h of G.humans) {
     if (h.state === 'out') continue;
     h.stamina = Math.min(STAMINA_MAX, h.stamina + STAMINA_REGEN * dt);
-    h.swing = Math.max(0, h.swing - dt); h.safeFx -= dt; h.digCd = Math.max(0, (h.digCd || 0) - dt);
+    h.swing = Math.max(0, h.swing - dt); h.safeFx -= dt; h.digCd = Math.max(0, (h.digCd || 0) - dt); h.beamHits = Math.max(0, (h.beamHits || 0) - dt);
     if (h.state === 'ok') {
       if (h.isPlayer) h.mv = playerMove(); else { h.ai.pathT -= dt; h.ai.qT -= dt; humanAI(h, dt); }
       const m = Math.min(1, Math.hypot(h.mv.x, h.mv.z));
