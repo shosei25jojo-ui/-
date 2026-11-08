@@ -116,6 +116,11 @@
   .wbtn span { font-size: 11px; font-weight: 600; opacity: .85; }
   .wbtn.sel { border-color: #ffd34d; background: #5a2f4a; box-shadow: 0 0 0 2px #ffd34d inset; }
   .wbtn:active { transform: scale(.97); }
+  .wbtn:disabled { opacity: .35; filter: grayscale(1); }
+  .wbtn .who { font-size: 11px; color: #9fd0ff; }
+  #alert { position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%); z-index: 8; pointer-events: none; display: none;
+           font-size: 44px; font-weight: 900; color: #ff3b3b; text-shadow: 0 0 12px #000, 0 0 4px #000; animation: alertBlink .35s infinite; white-space: nowrap; }
+  @keyframes alertBlink { 50% { opacity: .35; transform: translate(-50%, -50%) scale(1.06); } }
   #wait .mates { font-size: 12px; color: #d9c2d0; }
   #waitTime { color: #ffd34d; }
   #loadErr { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; text-align: center; z-index: 60; background: #0d1320; }
@@ -146,6 +151,7 @@
 
 <div id="screen"></div>
 <div id="wait"></div>
+<div id="alert">⚠ 鬼が来た！</div>
 <div id="rotate"><div class="icon">📱</div>スマホを横にしてください</div>
 <div id="loadErr">3D描画ライブラリ(Three.js)を読み込めませんでした。<br>インターネット接続を確認して再読み込みしてください。</div>
 
@@ -164,10 +170,20 @@ const HUMAN_COUNT = 6;        // 人の数
 const ONI_COUNT = 2;          // 鬼の数
 const FIELD_SIZE = 60;        // フィールドの大きさ(マス)
 
-// ---- 部屋(STEP1は2部屋) ----
+// ---- ラウンド・部屋 ----
+const NIGHT_COUNT = 3;        // 昼→夜を1ラウンドとして何回くり返すか
+const ROOM_COUNT = 2;         // 部屋の数(最大4。STEP1は2)
+const RESCUE_OPEN = 30;       // 夜開始から、鬼のいない部屋の通路が開くまで(秒)
+const HUMAN_ROOM_CAP = 4;     // 1部屋に入れる人の定員
+const ONI_ROOM_CAP = 2;       // 鬼が分かれるときの1部屋の定員
+const ONI_SPLIT_MIN = 3;      // 鬼がこの数以上なら各自が部屋を選ぶ(未満なら全員で投票)
+const ROOM_SELECT_TIME = 10;  // 部屋選択の制限時間(秒)
+const ONI_ENTER_DELAY = 2;    // 夜開始から鬼が扉を開けて入ってくるまで(秒)
 const ROOM_DEFS = [
-  { id: 'forest',  name: '森',     icon: '🌲', desc: '木が多く見通しが悪い' },
-  { id: 'factory', name: '廃工場', icon: '🏭', desc: '狭い通路と壁が多い' },
+  { terrain: 'forest',  name: '森',     icon: '🌲', desc: '木が多く見通しが悪い' },
+  { terrain: 'factory', name: '廃工場', icon: '🏭', desc: '狭い通路と壁が多い' },
+  { terrain: 'forest',  name: '深い森', icon: '🌳', desc: '木がさらに密集している' },
+  { terrain: 'factory', name: '倉庫',   icon: '🏚', desc: '壁に囲まれた小部屋だらけ' },
 ];
 // ---- 鬼の強化(待機ルームで1つ選ぶ) ----
 const BOOSTS = {
@@ -250,54 +266,70 @@ if (typeof THREE === 'undefined') { $('loadErr').style.display = 'flex'; throw n
 const OB_FENCE = 1, OB_ROCK = 2, OB_TREE = 3, OB_HUT = 4, OB_DIV = 5, OB_FWALL = 6, OB_TANK = 7, OB_GATE = 8;
 let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), cols = [], huts = [];
 
-// 部屋の区切り: 中央の2列が仕切り壁。通路は2か所
-const DIV0 = (N >> 1) - 1, DIV1 = N >> 1;
+// 部屋は縦長の帯。部屋どうしの間は2列の仕切り壁で、通路は2か所
+const DIVW = 2;
+const ROOM_W = Math.floor((N - 2 - (ROOM_COUNT - 1) * DIVW) / ROOM_COUNT);
 const PASSAGES = [Math.round(N * 0.25), Math.round(N * 0.75)].map((c) => [c - 1, c, c + 1]);
 let ROOMS = [];
+const roomOfX = new Int8Array(N).fill(-1);
 function makeRooms() {
-  ROOMS = ROOM_DEFS.map((d, k) => {
-    const x0 = k === 0 ? 1 : DIV1 + 1, x1 = k === 0 ? DIV0 - 1 : N - 2, cx = Math.floor((x0 + x1) / 2);
-    return Object.assign({}, d, { k, x0, x1, entrances: [{ x: cx, z: 3, name: '北' }, { x: cx, z: N - 4, name: '南' }] });
-  });
+  roomOfX.fill(-1); ROOMS = [];
+  for (let k = 0; k < ROOM_COUNT; k++) {
+    const x0 = 1 + k * (ROOM_W + DIVW), x1 = x0 + ROOM_W - 1, cx = Math.floor((x0 + x1) / 2);
+    for (let x = x0; x <= x1; x++) roomOfX[x] = k;
+    // door: 北の柵にある扉(鬼の入口・救援ランプ)  home: 人の集合場所
+    ROOMS.push(Object.assign({}, ROOM_DEFS[k % ROOM_DEFS.length], { k, x0, x1, cx, door: { x: cx, z: 2 }, home: { x: cx, z: Math.floor(N * 0.55) } }));
+  }
 }
-const roomAt = (x) => (x <= DIV0 - 1 ? 0 : x >= DIV1 + 1 ? 1 : -1);
-const isPassage = (x, z) => (x === DIV0 || x === DIV1) && PASSAGES.some((p) => p.includes(z));
+const roomAt = (x) => (x >= 0 && x < N ? roomOfX[x] : -1);
+const isDivX = (x) => roomOfX[x] === -1 && ROOMS.length > 1 && x > ROOMS[0].x1 && x < ROOMS[ROOMS.length - 1].x0;
+const isPassage = (x, z) => x >= 0 && x < N && isDivX(x) && PASSAGES.some((p) => p.includes(z));
 
 function genField() {
   makeRooms();
   obst = new Uint8Array(N * N); heights = new Float32Array(N * N); cols = []; huts = [];
   for (let i = 0; i < N * N; i++) cols.push([]);
   for (let i = 0; i < N; i++) { obst[idx(i, 0)] = obst[idx(i, N - 1)] = obst[idx(0, i)] = obst[idx(N - 1, i)] = OB_FENCE; }
-  for (let z = 1; z < N - 1; z++) for (const x of [DIV0, DIV1]) if (!isPassage(x, z)) obst[idx(x, z)] = OB_DIV;
-  // 入口と通路の前は空けておく
-  const reserved = (x, z) => ROOMS.some((r) => r.entrances.some((e) => Math.abs(e.x - x) <= 3 && Math.abs(e.z - z) <= 3)) ||
-    PASSAGES.some((p) => Math.abs(x - (DIV0 + 0.5)) <= 4.5 && z >= p[0] - 1 && z <= p[2] + 1);
-  const inRoom = (r, x, z) => x >= r.x0 && x <= r.x1 && z >= 1 && z <= N - 2;
-
-  // ---- 森: 木が多く見通しが悪い ----
-  const F = ROOMS[0];
-  for (let tries = 0; huts.length < 2 && tries < 200; tries++) {
-    const x = randInt(F.x0 + 1, F.x1 - 4), z = randInt(3, N - 6);
+  for (let z = 1; z < N - 1; z++) for (let x = 1; x < N - 1; x++) if (roomOfX[x] === -1 && !isPassage(x, z)) obst[idx(x, z)] = OB_DIV;
+  // 扉の前・集合場所・通路の前は空けておく
+  const nearDiv = (x) => { for (let d = -3; d <= 3; d++) if (x + d > 0 && x + d < N && isDivX(x + d)) return true; return false; };
+  const reserved = (x, z) => ROOMS.some((r) => (Math.abs(r.door.x - x) <= 3 && z <= 5) || (Math.abs(r.home.x - x) <= 2 && Math.abs(r.home.z - z) <= 2)) ||
+    (nearDiv(x) && PASSAGES.some((p) => z >= p[0] - 1 && z <= p[2] + 1));
+  for (const r of ROOMS) (r.terrain === 'forest' ? genForest : genFactory)(r, reserved);
+  // 集合場所から行けない場所は埋める(通路は開いている前提で確認)
+  const st = idx(ROOMS[0].home.x, ROOMS[0].home.z), seen = new Uint8Array(N * N), q = [st]; seen[st] = 1;
+  while (q.length) {
+    const i = q.pop(), x = i % N, z = (i / N) | 0;
+    for (const [dx, dz] of DIRS4) { const j = idx(x + dx, z + dz); if (!obst[j] && !seen[j]) { seen[j] = 1; q.push(j); } }
+  }
+  for (let i = 0; i < N * N; i++) if (!obst[i] && !seen[i]) { const r = ROOMS[roomAt(i % N)]; obst[i] = r && r.terrain === 'factory' ? OB_FWALL : OB_ROCK; }
+}
+// ---- 森: 木が多く見通しが悪い ----
+function genForest(F, reserved) {
+  const scale = ROOM_W / 28;
+  for (let tries = 0, n = 0; n < Math.round(2 * scale) && tries < 200; tries++) {
+    const x = randInt(F.x0 + 1, F.x1 - 4), z = randInt(6, N - 6);
     let ok = true;
     for (let dz = -1; dz <= 3 && ok; dz++) for (let dx = -1; dx <= 3 && ok; dx++) if (obst[idx(x + dx, z + dz)] || reserved(x + dx, z + dz)) ok = false;
     if (!ok) continue;
     for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) obst[idx(x + dx, z + dz)] = OB_HUT;
-    huts.push({ x, z, rot: randInt(0, 3) });
+    huts.push({ x, z, rot: randInt(0, 3) }); n++;
   }
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; i < 22 * scale; i++) {
     let x = randInt(F.x0, F.x1), z = randInt(2, N - 3);
     for (let k = 0, n = randInt(1, 3); k < n; k++) {
-      if (inRoom(F, x, z) && !reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_ROCK;
+      if (x >= F.x0 && x <= F.x1 && z > 0 && z < N - 1 && !reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_ROCK;
       const d = DIRS4[randInt(0, 3)]; x += d[0]; z += d[1];
     }
   }
-  for (let i = 0; i < 420; i++) {
+  for (let i = 0; i < 420 * scale; i++) {
     const x = randInt(F.x0, F.x1), z = randInt(1, N - 2);
     if (!reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_TREE;
   }
-
-  // ---- 廃工場: 4×4の小部屋が並ぶ迷路(狭い通路と壁) ----
-  const W = ROOMS[1], seg = new Map();
+}
+// ---- 廃工場: 4×4の小部屋が並ぶ迷路(狭い通路と壁) ----
+function genFactory(W, reserved) {
+  const seg = new Map();
   const segOf = (key) => { if (!seg.has(key)) seg.set(key, { drop: Math.random() < 0.22, g: randInt(0, 2) }); return seg.get(key); };
   for (let z = 1; z < N - 1; z++) for (let x = W.x0; x <= W.x1; x++) {
     const lx = x - W.x0, lz = z - 1, vert = lx % 5 === 4, hor = lz % 5 === 4;
@@ -309,23 +341,16 @@ function genField() {
     }
     if (!reserved(x, z)) obst[idx(x, z)] = OB_FWALL;
   }
-  for (let i = 0; i < 26; i++) {
+  for (let i = 0; i < 26 * ROOM_W / 28; i++) {
     const x = randInt(W.x0, W.x1), z = randInt(2, N - 3);
     if (!reserved(x, z) && !obst[idx(x, z)]) obst[idx(x, z)] = OB_TANK;
   }
-
-  // 入口から行けない場所は埋める
-  const st = idx(F.entrances[0].x, F.entrances[0].z), seen = new Uint8Array(N * N), q = [st]; seen[st] = 1;
-  while (q.length) {
-    const i = q.pop(), x = i % N, z = (i / N) | 0;
-    for (const [dx, dz] of DIRS4) { const j = idx(x + dx, z + dz); if (!obst[j] && !seen[j]) { seen[j] = 1; q.push(j); } }
-  }
-  for (let i = 0; i < N * N; i++) if (!obst[i] && !seen[i]) obst[i] = roomAt(i % N) === 1 ? OB_FWALL : OB_ROCK;
 }
-// 夜は通路をふさいで、選ばれた部屋だけで鬼ごっこ
+// 通路のゲート(閉じると通れない)
 function setGates(closed) {
-  for (const [x0] of [[DIV0], [DIV1]]) for (const p of PASSAGES) for (const z of p) obst[idx(x0, z)] = closed ? OB_GATE : 0;
+  for (let x = 1; x < N - 1; x++) if (isDivX(x)) for (const p of PASSAGES) for (const z of p) obst[idx(x, z)] = closed ? OB_GATE : 0;
   if (G3.gate) G3.gate.visible = closed;
+  if (G) G.gatesOpen = !closed;
 }
 
 const cellTopI = (i) => (obst[i] ? Infinity : heights[i]);
@@ -345,6 +370,7 @@ function groundAt(x, z, r) {
   forCells(x, z, r, (i) => { if (i >= 0 && !obst[i]) m = Math.max(m, heights[i]); });
   return m;
 }
+const inRoomCell = (k) => (x) => roomAt(x) === k;
 function randomFreeCell(margin = 1, test) {
   for (let t = 0; t < 1000; t++) {
     const x = randInt(margin, N - 1 - margin), z = randInt(margin, N - 1 - margin), i = idx(x, z);
@@ -359,7 +385,8 @@ function randomFreeCell(margin = 1, test) {
 const bPrev = new Int32Array(N * N), bQ = new Int32Array(N * N), bDepth = new Int16Array(N * N);
 function bfs(start, o) {
   bPrev.fill(-1);
-  const H = (i) => (obst[i] ? Infinity : o.breakBlocks ? 0 : heights[i]);
+  const lim = o.room === undefined ? -1 : o.room;
+  const H = (i) => (obst[i] || (lim >= 0 && roomOfX[i % N] !== lim) ? Infinity : o.breakBlocks ? 0 : heights[i]);
   const maxUp = (o.maxUp || 0) + 0.01, maxD = o.maxDepth || 9999;
   let head = 0, tail = 0; bQ[tail++] = start; bPrev[start] = start; bDepth[start] = 0;
   while (head < tail) {
@@ -389,8 +416,9 @@ function seekPoint(e, tx, tz, maxUp, allowBreak) {
   if (s === g) return dir2(tx - e.x, tz - e.z);
   if (ai.pathT <= 0 || ai.pFrom !== s || ai.pGoal !== g) {
     ai.pathT = 0.3; ai.pFrom = s; ai.pGoal = g; ai.pBreak = false;
-    let r = bfs(s, { maxUp, goal: g });
-    if (!r && allowBreak) { r = bfs(s, { maxUp, goal: g, breakBlocks: true }); ai.pBreak = !!r; }
+    const room = restrictOf(e);
+    let r = bfs(s, { maxUp, goal: g, room });
+    if (!r && allowBreak) { r = bfs(s, { maxUp, goal: g, breakBlocks: true, room }); ai.pBreak = !!r; }
     ai.pNext = r ? r.next : -1;
   }
   if (ai.pNext < 0 || ai.pNext === g) return dir2(tx - e.x, tz - e.z);
@@ -401,7 +429,7 @@ function seekPred(e, key, pred, maxUp, maxDepth) {
   const ai = e.ai, s = cellOf(e);
   if (ai.qT <= 0 || ai.qKey !== key || ai.qFrom !== s) {
     ai.qT = 0.4; ai.qKey = key; ai.qFrom = s;
-    ai.q = bfs(s, { maxUp, pred, maxDepth });
+    ai.q = bfs(s, { maxUp, pred, maxDepth, room: restrictOf(e) });
   }
   if (!ai.q) return null;
   const n = ai.q.next;
@@ -477,6 +505,7 @@ function init3D() {
   MAT.divWall = lam(0x4a4d55);
   MAT.tank = lam(0xb5652b);
   MAT.gate = lam(0xd23b3b, { emissive: 0x330000 });
+  MAT.doorFrame = lam(0x5b3a1e); MAT.door = lam(0x8a5a2e);
   MAT.scaffold = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
     c.fillStyle = '#8a5a2b'; c.fillRect(0, 0, s, s);
     for (let i = 0; i < 4; i++) { c.fillStyle = i % 2 ? '#c48a4f' : '#b57a40'; c.fillRect(3, 3 + i * 15, s - 6, 12); }
@@ -502,10 +531,10 @@ function buildFieldMeshes() {
   const tex = makeCanvasTex(1024, (c, s) => {
     const p = s / N;
     for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
-      const v = (Math.random() * 10) | 0, r = roomAt(x);
-      c.fillStyle = r === 1 ? `rgb(${128 + v},${128 + v},${124 + v})` : r === 0 ? `rgb(${88 + v},${150 + v},${76 + v})` : 'rgb(90,90,96)';
+      const v = (Math.random() * 10) | 0, r = roomAt(x), t = r >= 0 ? ROOMS[r].terrain : '';
+      c.fillStyle = t === 'factory' ? `rgb(${128 + v},${128 + v},${124 + v})` : t === 'forest' ? `rgb(${88 + v},${150 + v},${76 + v})` : 'rgb(90,90,96)';
       c.fillRect(x * p, z * p, p + 1, p + 1);
-      if (r === 1 && Math.random() < 0.08) { c.fillStyle = 'rgba(120,70,30,.35)'; c.beginPath(); c.arc((x + 0.5) * p, (z + 0.5) * p, p * 0.6, 0, TAU); c.fill(); }
+      if (t === 'factory' && Math.random() < 0.08) { c.fillStyle = 'rgba(120,70,30,.35)'; c.beginPath(); c.arc((x + 0.5) * p, (z + 0.5) * p, p * 0.6, 0, TAU); c.fill(); }
       if (isPassage(x, z)) { c.fillStyle = (z % 2) ? '#e0b83a' : '#333'; c.fillRect(x * p, z * p, p + 1, p + 1); }
     }
     c.strokeStyle = 'rgba(0,40,0,.18)'; c.lineWidth = 1;
@@ -547,9 +576,20 @@ function buildFieldMeshes() {
   inst(GEO.small, MAT.divWall, dv, (i) => _m.compose(_v.set(cX(i), 1.6, cZ(i)), _q.identity(), _s.set(1, 3.2, 1)));
   inst(new THREE.CylinderGeometry(0.45, 0.45, 2.2, 10), MAT.tank, tk, (i) => _m.compose(_v.set(cX(i), 1.1, cZ(i)), _q.identity(), _s.set(1, 1, 1)));
   const gates = [];
-  for (const x of [DIV0, DIV1]) for (const p of PASSAGES) for (const z of p) gates.push(idx(x, z));
+  for (let x = 1; x < N - 1; x++) if (isDivX(x)) for (const p of PASSAGES) for (const z of p) gates.push(idx(x, z));
   G3.gate = inst(GEO.small, MAT.gate, gates, (i) => _m.compose(_v.set(cX(i), 1.2, cZ(i)), _q.identity(), _s.set(0.3, 2.4, 1)));
-  G3.gate.visible = false;
+  G3.gate.visible = true;
+  // 各部屋の扉と、扉の上の救援ランプ(どの部屋からも見えるよう高く・霧の影響なし)
+  G3.lamps = ROOMS.map((r) => {
+    const g = new THREE.Group(); g.position.set(r.cx + 0.5, 0, 0.5);
+    addBox(g, MAT.doorFrame, 0.3, 3.3, 0.3, -1.25, 1.65, 0); addBox(g, MAT.doorFrame, 0.3, 3.3, 0.3, 1.25, 1.65, 0);
+    addBox(g, MAT.doorFrame, 2.9, 0.35, 0.35, 0, 3.3, 0); addBox(g, MAT.door, 2.2, 3.0, 0.1, 0, 1.5, -0.12);
+    addBox(g, MAT.doorFrame, 0.14, 2.6, 0.14, 0, 4.6, 0);
+    const mat = basic(0x3a2222, { fog: false });
+    const lamp = new THREE.Mesh(GEO.sphere, mat); lamp.scale.setScalar(0.55); lamp.position.y = 6.1; g.add(lamp);
+    world.add(g);
+    return { mat, on: false };
+  });
 
   // 柵
   const posts = new THREE.InstancedMesh(GEO.small, lam(0x8b5a2b), N * 4);
@@ -652,14 +692,14 @@ function makeOniMesh(type) {
 // =====================================================================
 let G = null, scene_ = 'title', playerSide = 'human', playerOniType = 'carnivore';
 let camYaw = 0, nightK = 0;
-const playing = () => scene_ === 'day' || scene_ === 'night';
+const playing = () => scene_ === 'day' || scene_ === 'night' || scene_ === 'select';
 
 function makeHuman(i, isPlayer, x, z) {
   const color = HUMAN_COLORS[i % HUMAN_COLORS.length];
   const h = {
     kind: 'human', id: i, isPlayer, x, z, y: 0, vy: 0, onGround: true, yaw: 0, r: HUMAN_R, hgt: HUMAN_H, jumpH: HUMAN_JUMP,
     wood: START_WOOD, stone: START_STONE, stamina: STAMINA_MAX, state: 'ok', freezeTimer: 0, freezeCount: 0, thaw: 0,
-    buildType: 'scaffold', standBlock: null, standTime: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), safeFx: 0,
+    buildType: 'scaffold', standBlock: null, standTime: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), safeFx: 0, room: -1, pick: -1,
     mesh: makeHumanMesh(color, isPlayer), name: isPlayer ? 'あなた' : 'CPU' + i,
   };
   const lbl = document.createElement('div'); lbl.className = 'lbl'; lbl.style.display = 'none'; $('labels').appendChild(lbl); h.label = lbl;
@@ -668,7 +708,8 @@ function makeHuman(i, isPlayer, x, z) {
 function makeOni(i, type, isPlayer, x, z) {
   const d = ONI[type];
   return { kind: 'oni', id: i, type, isPlayer, x, z, y: 0, vy: 0, onGround: true, yaw: Math.PI, r: d.r, hgt: d.h, jumpH: d.jump,
-           fruits: 0, stun: 0, atkCd: 0, freezeCd: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), mesh: makeOniMesh(type), walkT: 0 };
+           stun: 0, atkCd: 0, freezeCd: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), mesh: makeOniMesh(type), walkT: 0,
+           room: -1, vote: null, boost: null, entered: false, enterT: 0 };
 }
 function newAI() {
   return { pathT: 0, pFrom: -1, pGoal: -1, pNext: -1, pBreak: false, qT: 0, qKey: '', qFrom: -1, q: null,
@@ -693,35 +734,89 @@ function startGame() {
   genField();
   buildFieldMeshes();
   $('labels').innerHTML = '';
-  G = { phase: 'day', timeLeft: DAY_TIME, dayElapsed: 0, nextEvent: EVENT_INTERVAL, humans: [], onis: [], boxes: [], items: [], fruits: [],
-        blocks: [], parts: [], fx: [], chest: null, rain: null, player: null, spectate: null, buildMode: false, buildIdle: 0,
-        stats: { freezes: 0, thaws: 0, hits: 0, built: 0 }, cam: new THREE.Vector3() };
-  // 昼の人は北の通路の前(森側)からスタート。鬼は待機ルームにいてフィールドには出ない
-  const sx = DIV0 - 3, sz = PASSAGES[0][1] + 0.5;
-  for (let i = 0; i < HUMAN_COUNT; i++) {
-    const a = (i / HUMAN_COUNT) * TAU;
-    G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, sx + Math.cos(a) * 1.6, sz + Math.sin(a) * 1.6));
-  }
+  G = { phase: 'select', round: 1, timeLeft: 0, selectT: 0, dayElapsed: 0, nextEvent: EVENT_INTERVAL, nightT: 0,
+        humans: [], onis: [], boxes: [], items: [], fruits: [], blocks: [], parts: [], fx: [], chest: null, rain: null,
+        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {},
+        stats: { freezes: 0, thaws: 0, hits: 0, built: 0, rescues: 0 }, cam: new THREE.Vector3() };
+  for (let i = 0; i < HUMAN_COUNT; i++) G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, ROOMS[0].home.x + 0.5, ROOMS[0].home.z + 0.5));
   for (let i = 0; i < ONI_COUNT; i++) {
     const type = playerSide === 'oni' ? (i === 0 ? playerOniType : playerOniType === 'carnivore' ? 'monster' : 'carnivore') : (i % 2 ? 'monster' : 'carnivore');
     const o = makeOni(i, type, playerSide === 'oni' && i === 0, 2, 2);
     o.mesh.g.visible = false;
-    if (!o.isPlayer) { o.vote = randInt(0, ROOMS.length - 1); o.boost = Object.keys(BOOSTS)[randInt(0, 2)]; } // CPUはランダム
-    else { o.vote = null; o.boost = null; }
     G.onis.push(o);
   }
   G.player = playerSide === 'human' ? G.humans[0] : G.onis[0];
-  for (let i = 0; i < BOX_COUNT; i++) spawnBox(randomFreeCell(1));
-  G.lastRoom = 0;
-  camYaw = -Math.PI / 2; nightK = 0;
-  setGates(false);
-  G.cam.set(G.player.x, G.player.y + 1.2, G.player.z);
-  scene_ = 'day';
+  for (const r of ROOMS) for (let i = 0; i < BOX_COUNT / ROOM_COUNT; i++) spawnBox(randomFreeCell(1, inRoomCell(r.k)));
+  camYaw = 0; nightK = 0;
+  setGates(true);
   applyLighting();
-  showScreen(null); setupHUD();
-  if (playerSide === 'human') telop('☀ 昼: 森と廃工場で資材を集め、足場を積もう！', 'blue');
-  else renderWait();
+  showScreen(null);
+  startSelect();
 }
+
+// ---------------------------------------------------------------------
+// 部屋選択(定員制・早い者勝ち)
+// ---------------------------------------------------------------------
+const splitMode = () => ONI_COUNT >= ONI_SPLIT_MIN;
+const roomPop = (k, except) => G.humans.filter((h) => h !== except && h.state !== 'out' && h.pick === k).length;
+const oniPop = (k, except) => G.onis.filter((o) => o !== except && o.vote === k).length;
+function cpuPick(h) { // 人数が少ない部屋を優先
+  const free = ROOMS.filter((r) => roomPop(r.k, h) < HUMAN_ROOM_CAP);
+  if (!free.length) { h.pick = randInt(0, ROOM_COUNT - 1); return; }
+  const min = Math.min(...free.map((r) => roomPop(r.k, h))), c = free.filter((r) => roomPop(r.k, h) === min);
+  h.pick = c[randInt(0, c.length - 1)].k;
+}
+function cpuOniChoose(o) {
+  o.boost = Object.keys(BOOSTS)[randInt(0, 2)];
+  const free = ROOMS.filter((r) => !splitMode() || oniPop(r.k, o) < ONI_ROOM_CAP);
+  o.vote = (free.length ? free[randInt(0, free.length - 1)] : ROOMS[randInt(0, ROOM_COUNT - 1)]).k;
+}
+function startSelect() {
+  G.phase = 'select'; scene_ = 'select'; G.selectT = ROOM_SELECT_TIME; G.timeLeft = ROOM_SELECT_TIME;
+  for (const h of G.humans) { h.pick = -1; h.pickAt = h.isPlayer ? Infinity : rand(0.8, ROOM_SELECT_TIME - 1.5); }
+  for (const o of G.onis) { o.vote = null; o.boost = null; o.entered = false; o.mesh.g.visible = false; o.x = 2; o.z = 2; }
+  for (const o of G.onis) if (!o.isPlayer) cpuOniChoose(o);
+  G.buildMode = false;
+  setupHUD();
+  if (G.player.kind === 'oni') renderWait(); else renderSelect();
+}
+function updateSelect(dt) {
+  G.selectT -= dt; G.timeLeft = G.selectT;
+  const elapsed = ROOM_SELECT_TIME - G.selectT;
+  for (const h of G.humans) if (h.state !== 'out' && h.pick < 0 && elapsed >= h.pickAt) cpuPick(h);
+  const alive = G.humans.filter((h) => h.state !== 'out');
+  if (alive.every((h) => h.pick >= 0)) G.selectT = Math.min(G.selectT, 1.2); // 全員決まったら少し待って開始
+  if (G.player.kind === 'oni') { const w = $('waitTime'); if (w) w.textContent = '夜まで ' + fmtTime(G.selectT + DAY_TIME); }
+  else renderSelect();
+  if (G.selectT <= 0) {
+    for (const h of alive) if (h.pick < 0) cpuPick(h); // 選ばなかった人は空いている部屋へ
+    startDay();
+  }
+}
+function startDay() {
+  G.phase = 'day'; scene_ = 'day'; G.timeLeft = DAY_TIME; G.dayElapsed = 0; G.nextEvent = EVENT_INTERVAL;
+  setGates(true);
+  // 部屋を移った人は新しい部屋の集合場所へ(資材は持ち越し、建物は前の部屋に残る)
+  for (const r of ROOMS) placeInRoom(G.humans.filter((h) => h.state !== 'out' && h.pick === r.k && h.room !== r.k), r.k);
+  for (const h of G.humans) if (h.state !== 'out') h.room = h.pick;
+  if (G.round > 1) for (const r of ROOMS) for (let i = 0; i < BOX_COUNT / ROOM_COUNT * 0.5; i++) spawnBox(randomFreeCell(1, inRoomCell(r.k)));
+  const f = focusOf(); camYaw = Math.PI; G.cam.set(f.x, f.y + 1.2, f.z);
+  setupHUD();
+  if (G.player.kind === 'human') {
+    const r = ROOMS[G.player.room];
+    if (G.player.state !== 'out') telop(`☀ ${G.round}日目: ${r.icon}${r.name}で資材を集め、足場を積もう！（夜は${G.round}/${NIGHT_COUNT}回目）`, 'blue');
+  } else renderWait();
+}
+// 集合場所の近くに並べる
+function placeInRoom(list, k) {
+  if (!list.length) return;
+  const spots = spotsNear(ROOMS[k].home, list.length);
+  list.forEach((h, j) => {
+    const i = spots[j % spots.length];
+    h.x = cX(i) + rand(-0.1, 0.1); h.z = cZ(i) + rand(-0.1, 0.1); h.y = heights[i]; h.vy = 0; h.ai = newAI(); h.standBlock = null; h.standTime = 0;
+  });
+}
+const focusOf = () => (G.player.kind === 'human' && G.player.state === 'out' && G.spectate ? G.spectate : G.player);
 
 // 投票で部屋を決める(同数ならランダム)
 function decideRoom() {
@@ -736,59 +831,82 @@ function setOniType(o, type) {
   const d = ONI[type];
   o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false;
 }
-// 入口の近くの空いているマスをランダムに選ぶ
+// ある地点の近く(同じ部屋)の空いているマスをランダムに選ぶ
 function spotsNear(e, n) {
-  const list = [];
-  for (let rr = 1; rr <= 6 && list.length < n * 3; rr++) for (let z = e.z - rr; z <= e.z + rr; z++) for (let x = e.x - rr; x <= e.x + rr; x++) {
-    if (!inField(x, z)) continue;
+  const list = [], k = roomAt(e.x);
+  for (let rr = 1; rr <= 7 && list.length < n * 3; rr++) for (let z = e.z - rr; z <= e.z + rr; z++) for (let x = e.x - rr; x <= e.x + rr; x++) {
+    if (!inField(x, z) || roomAt(x) !== k) continue;
     const i = idx(x, z);
-    if (!obst[i] && heights[i] === 0 && !list.includes(i)) list.push(i);
+    if (!obst[i] && !list.includes(i)) list.push(i);
   }
-  return shuffle(list).slice(0, n);
+  list.sort((a, b) => heights[a] - heights[b]);
+  return shuffle(list.slice(0, Math.max(n * 2, 4))).slice(0, n);
 }
 
 function startNight() {
-  G.phase = 'night'; scene_ = 'night'; G.timeLeft = NIGHT_TIME;
+  G.phase = 'night'; scene_ = 'night'; G.timeLeft = NIGHT_TIME; G.nightT = 0; G.rescueOpened = false; G.warned = {};
   $('wait').style.display = 'none';
   // 選ばれていない項目はランダムで決める
   for (const o of G.onis) {
-    if (o.vote === null) o.vote = randInt(0, ROOMS.length - 1);
     if (!o.boost) o.boost = Object.keys(BOOSTS)[randInt(0, 2)];
+    if (o.vote === null) { const b = o.boost; cpuOniChoose(o); o.boost = b; }
     o.speedMul = o.boost === 'speed' ? BOOST_SPEED : 1;
     o.dmgMul = o.boost === 'power' ? BOOST_POWER : 1;
     o.thawMul = o.boost === 'freeze' ? BOOST_THAW : 1;
   }
-  const room = ROOMS[decideRoom()];
-  G.room = room.k;
+  if (splitMode()) for (const o of G.onis) o.room = o.vote;
+  else { const k = decideRoom(); for (const o of G.onis) o.room = k; }
+  G.oniRooms = [...new Set(G.onis.map((o) => o.room))];
   setGates(true);
-  // 人は入口の片方、鬼は反対側の入口から
-  const hk = randInt(0, 1), he = room.entrances[hk], oe = room.entrances[1 - hk];
-  const alive = G.humans.filter((h) => h.state !== 'out');
-  spotsNear(he, alive.length).forEach((i, k) => { const h = alive[k]; h.x = cX(i); h.z = cZ(i); h.y = 0; h.vy = 0; h.ai = newAI(); });
-  spotsNear(oe, G.onis.length).forEach((i, k) => { const o = G.onis[k]; o.x = cX(i); o.z = cZ(i); o.y = 0; o.vy = 0; o.ai = newAI(); o.mesh.g.visible = true; o.yaw = Math.atan2(he.x - oe.x, he.z - oe.z); });
-  G.humanEntrance = he; G.oniEntrance = oe;
-  // 人は鬼の入口の方を向く/カメラも合わせる
-  const f = G.player;
-  if (f.kind === 'human') { f.yaw = Math.atan2(oe.x - he.x, oe.z - he.z); camYaw = f.yaw + Math.PI; } else camYaw = f.yaw + Math.PI;
-  G.cam.set(f.x, f.y + 1.2, f.z);
+  // 鬼は選んだ部屋の扉の前に立ち、少ししてから入ってくる
+  for (const k of G.oniRooms) {
+    const list = G.onis.filter((o) => o.room === k), spots = spotsNear(ROOMS[k].door, list.length);
+    list.forEach((o, j) => { const i = spots[j % spots.length]; o.x = cX(i); o.z = cZ(i); o.y = heights[i]; o.vy = 0; o.ai = newAI(); o.yaw = 0; o.entered = false; o.enterT = ONI_ENTER_DELAY; o.stun = 0; });
+  }
   G.buildMode = false;
-  for (const f of G.fruits) world.remove(f.mesh);
-  G.fruits = [];
-  if (G.chest) { G.chest.mesh.children.forEach((m) => { if (m.material === MAT.beam) m.visible = false; }); }
+  if (G.chest) { world.remove(G.chest.mesh); G.boxes = G.boxes.filter((b) => b !== G.chest); G.chest = null; }
   G.rain && world.remove(G.rain.mesh); G.rain = null;
-  G.humans.forEach((h) => { h.ai.queue = []; h.standBlock = null; h.standTime = 0; });
-  telop(`🌙 鬼が「${room.icon} ${room.name}」の部屋を選んだ！ 鬼は${oe.name}の入口から来る…`, '');
+  G.humans.forEach((h) => { h.ai = newAI(); h.standBlock = null; h.standTime = 0; });
+  const f = focusOf();
+  if (G.player.kind === 'oni') {
+    const r = ROOMS[G.player.room];
+    telop(`🌙 第${G.round}夜: 鬼が「${r.icon} ${r.name}」の部屋を選んだ！ 扉から突入！`, '');
+    camYaw = Math.PI;
+  } else telop(`🌙 第${G.round}夜: 鬼がどこかの部屋にやってくる…`, '');
+  G.cam.set(f.x, f.y + 1.2, f.z);
   setupHUD();
+}
+// 鬼が部屋に入った瞬間: その部屋にいる人の画面にだけ警告
+function oniEnters(o) {
+  o.entered = true; o.mesh.g.visible = true;
+  if (G.warned[o.room]) return;
+  G.warned[o.room] = true;
+  const p = G.player;
+  if (p.kind === 'human' && p.state !== 'out' && roomAt(Math.floor(p.x)) === o.room) showAlert();
+}
+function endNight() {
+  if (G.round >= NIGHT_COUNT) { endGame('human'); return; }
+  G.round++;
+  setGates(true);
+  // 夜明け: 凍っていた人も元に戻り、全員が自分の部屋に戻る
+  for (const h of G.humans) if (h.state === 'frozen') { h.state = 'ok'; h.thaw = 0; }
+  for (const r of ROOMS) placeInRoom(G.humans.filter((h) => h.state !== 'out' && h.room === r.k), r.k);
+  for (const o of G.onis) { o.entered = false; o.mesh.g.visible = false; }
+  G.oniRooms = [];
+  G3.lamps.forEach((L) => (L.on = false));
+  telop(`☀ 夜が明けた！ 全員が自分の部屋にもどった（残り${NIGHT_COUNT - G.round + 1}夜）`, 'blue');
+  startSelect();
 }
 
 function endGame(winner) {
   scene_ = 'result';
+  $('wait').style.display = 'none';
   const alive = G.humans.filter((h) => h.state !== 'out').length, youWin = winner === playerSide;
   setupHUD(true);
   showScreen(`
     <div class="result-big ${youWin ? 'win' : 'lose'}">${youWin ? '🏆 勝利！' : '敗北…'}</div>
-    <h2>${winner === 'human' ? '人チーム' : '鬼チーム'}の勝ち</h2>
-    <div class="stats">生き残った人 <b>${alive} / ${HUMAN_COUNT}</b>　凍結 <b>${G.stats.freezes}</b>回　解凍 <b>${G.stats.thaws}</b>回<br>
+    <h2>${winner === 'human' ? `人チームの勝ち（${NIGHT_COUNT}夜を生きのびた）` : `鬼チームの勝ち（第${G.round}夜で全員脱落）`}</h2>
+    <div class="stats">生き残った人 <b>${alive} / ${HUMAN_COUNT}</b>　凍結 <b>${G.stats.freezes}</b>回　解凍 <b>${G.stats.thaws}</b>回（うち救援 <b>${G.stats.rescues}</b>回）<br>
       建てたブロック <b>${G.stats.built}</b>個　鬼を叩いた回数 <b>${G.stats.hits}</b></div>
     <div class="row2"><button class="choice c-human" data-act="again">もう一度遊ぶ</button><button class="choice c-plain" data-act="title">タイトルへ</button></div>
   `);
@@ -802,16 +920,18 @@ function areaName(x, z) {
   return `${r.icon}${r.name}の` + ['北', '中央', '南'][z < N / 3 ? 0 : z < (N * 2) / 3 ? 1 : 2];
 }
 function triggerEvent() {
+  const rooms = [...new Set(G.humans.filter((h) => h.state !== 'out').map((h) => h.room))];
+  const rk = rooms[randInt(0, rooms.length - 1)], rr = ROOMS[rk];
   if (Math.random() < 0.5 || G.chest) { // 宝箱が残っているときは雨
-    const ci = randomFreeCell(8), cx = ci % N, cz = (ci / N) | 0, R = 6;
-    for (let k = 0; k < RAIN_BOXES; k++) spawnBox(randomFreeCell(1, (x, z) => Math.hypot(x - cx, z - cz) <= R), false, rand(14, 34));
+    const ci = randomFreeCell(8, (x) => x >= rr.x0 + 4 && x <= rr.x1 - 4), cx = ci % N, cz = (ci / N) | 0, R = 5;
+    for (let k = 0; k < RAIN_BOXES; k++) spawnBox(randomFreeCell(1, (x, z) => roomAt(x) === rk && Math.hypot(x - cx, z - cz) <= R), false, rand(14, 34));
     const ring = new THREE.Mesh(new THREE.RingGeometry(R - 0.3, R, 48), MAT.ring);
     ring.rotation.x = -Math.PI / 2; ring.position.set(cx + 0.5, 0.05, cz + 0.5); world.add(ring);
     if (G.rain) world.remove(G.rain.mesh);
     G.rain = { mesh: ring, t: 8, x: cx + 0.5, z: cz + 0.5, r: R };
     telop(`📦 資材の雨！ ${areaName(cx, cz)}エリアに箱が降ってくる！`);
   } else {
-    const ci = randomFreeCell(4);
+    const ci = randomFreeCell(4, inRoomCell(rk));
     spawnBox(ci, true, 0);
     telop(`💰 巨大宝箱が出現！ ${areaName(ci % N, (ci / N) | 0)}エリアをさがせ！`);
   }
@@ -835,7 +955,7 @@ function canPlace(i, type) {
   for (const b of G.boxes) if (!b.opened && Math.floor(b.x) === x && Math.floor(b.z) === z) return false;
   for (const f of G.fruits) if (Math.floor(f.x) === x && Math.floor(f.z) === z) return false;
   for (const e of [...G.humans, ...G.onis]) { // キャラと重なる場所には置けない
-    if (e.state === 'out' || (e.kind === 'oni' && G.phase === 'day')) continue;
+    if (e.state === 'out' || (e.kind === 'oni' && (G.phase !== 'night' || !e.entered))) continue;
     if (e.x + e.r <= x || e.x - e.r >= x + 1 || e.z + e.r <= z || e.z - e.r >= z + 1) continue;
     if (e.y < base + p.h && e.y + e.hgt > base) return false;
   }
@@ -1000,6 +1120,7 @@ function placeJoy(x, y, kx, ky) {
   $('knob').style.transform = `translate(${kx}px, ${ky}px)`;
 }
 function onPointerDown(e) {
+  initAudio();
   if (!playing()) return;
   e.preventDefault();
   if (e.clientX < innerWidth * 0.5 && input.joyId === null) {
@@ -1038,7 +1159,7 @@ const canAct = () => playing() && G.player.kind === 'human' && G.player.state ==
 bindButton($('bPick'), () => canAct() && doPick(G.player));
 bindButton($('bHit'), () => canAct() && doHit(G.player));
 bindButton($('bJump'), () => playing() && G.player.state !== 'out' && jump(G.player));
-bindButton($('bAttack'), () => playing() && G.player.kind === 'oni' && doOniAttack(G.player));
+bindButton($('bAttack'), () => playing() && G.player.kind === 'oni' && G.player.entered && doOniAttack(G.player));
 // 建てる: 1回目でプレビュー、2回目で設置。長押しで種類切り替え
 const buildPress = { down: false, t: 0, switched: false };
 bindButton($('bBuild'), () => { buildPress.down = true; buildPress.t = 0; buildPress.switched = false; },
@@ -1059,13 +1180,13 @@ function switchPart() {
 window.addEventListener('keydown', (e) => {
   input.keys[e.code] = true;
   if (!playing() || e.repeat) return;
-  if (e.code === 'Space' && !(G.player.kind === 'oni' && G.phase === 'day')) jump(G.player);
+  if (e.code === 'Space' && G.phase !== 'select' && !(G.player.kind === 'oni' && G.phase !== 'night')) jump(G.player);
   if (G.player.kind === 'human') {
     if (e.code === 'KeyJ') canAct() && doPick(G.player);
     if (e.code === 'KeyK') pressBuild();
     if (e.code === 'KeyQ') switchPart();
     if (e.code === 'KeyL') canAct() && doHit(G.player);
-  } else if ((e.code === 'KeyJ' || e.code === 'KeyL') && G.phase === 'night') doOniAttack(G.player);
+  } else if ((e.code === 'KeyJ' || e.code === 'KeyL') && G.phase === 'night' && G.player.entered) doOniAttack(G.player);
 });
 window.addEventListener('keyup', (e) => { input.keys[e.code] = false; });
 // カメラ基準の移動ベクトル
@@ -1082,12 +1203,23 @@ function playerMove() {
 // =====================================================================
 // 物理(箱同士の簡易判定)
 // =====================================================================
+// 夜: 鬼は自分の部屋から出られない。鬼のいる部屋の人も出られない(鬼のいない部屋の人は救援に行ける)
+function restrictOf(e) {
+  if (!G || G.phase !== 'night') return -1;
+  if (e.kind === 'oni') return e.room;
+  return G.oniRooms.includes(e.room) ? e.room : -1;
+}
+function roomOK(e, x) {
+  const r = restrictOf(e);
+  return r < 0 || (roomAt(Math.floor(x - e.r)) === r && roomAt(Math.floor(x + e.r - 1e-6)) === r);
+}
 function moveBody(e, dx, dz) {
   e.blocked = -Infinity;
   const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dz)) / 0.2) || 1;
   for (let s = 0; s < steps; s++) {
     const sx = dx / steps, sz = dz / steps;
-    let b = blockedTop(e.x + sx, e.z, e.r, e.y); if (b === -Infinity) e.x += sx; else e.blocked = Math.max(e.blocked, b);
+    let b = blockedTop(e.x + sx, e.z, e.r, e.y); if (b === -Infinity && !roomOK(e, e.x + sx)) b = Infinity;
+    if (b === -Infinity) e.x += sx; else e.blocked = Math.max(e.blocked, b);
     b = blockedTop(e.x, e.z + sz, e.r, e.y); if (b === -Infinity) e.z += sz; else e.blocked = Math.max(e.blocked, b);
   }
 }
@@ -1105,7 +1237,10 @@ function autoJump(e) { // CPU: 登れる段差に当たったらジャンプ
 // =====================================================================
 function wander(e, maxUp, speed = 0.55) {
   const ai = e.ai;
-  if (ai.wander < 0 || ai.wanderT <= 0 || cellOf(e) === ai.wander) { ai.wander = randomFreeCell(2); ai.wanderT = rand(4, 8); }
+  if (ai.wander < 0 || ai.wanderT <= 0 || cellOf(e) === ai.wander) {
+    const k = e.room >= 0 ? e.room : roomAt(Math.floor(e.x));
+    ai.wander = randomFreeCell(2, inRoomCell(k)); ai.wanderT = rand(4, 8);
+  }
   const d = seekPoint(e, cX(ai.wander), cZ(ai.wander), maxUp, false);
   return { x: d.x * speed, z: d.z * speed };
 }
@@ -1114,10 +1249,10 @@ function fleeDir(h) {
   for (let k = 0; k < 16; k++) {
     const a = (k / 16) * TAU, dx = Math.sin(a), dz = Math.cos(a);
     const t = cellTop(h.x + dx * 0.9, h.z + dz * 0.9);
-    if (t - h.y > h.jumpH - 0.1) continue;
+    if (t - h.y > h.jumpH - 0.1 || !roomOK(h, h.x + dx * 0.9)) continue;
     const px = h.x + dx * 3, pz = h.z + dz * 3;
     let md = Infinity;
-    for (const o of G.onis) md = Math.min(md, Math.hypot(px - o.x, pz - o.z) * (o.stun > 0 ? 1.6 : 1));
+    for (const o of activeOnis()) md = Math.min(md, Math.hypot(px - o.x, pz - o.z) * (o.stun > 0 ? 1.6 : 1));
     let s = md;
     if (cellTop(px, pz) - h.y > h.jumpH) s -= 1.5;
     const ex = Math.min(px, N - px), ez = Math.min(pz, N - pz);
@@ -1129,6 +1264,8 @@ function fleeDir(h) {
   h.ai.fleeA = best;
   return { x: Math.sin(best), z: Math.cos(best) };
 }
+const activeOnis = () => G.onis.filter((o) => o.entered && G.phase === 'night');
+const sameRoom = (a, b) => roomAt(Math.floor(a.x)) === roomAt(Math.floor(b.x));
 const isCrumbling = (i) => { const c = cols[i]; return c.length && c[c.length - 1].crumble >= 0; };
 const cellFree = (i) => {
   if (obst[i] || heights[i] !== 0) return false;
@@ -1144,7 +1281,7 @@ function planStair(h) {
   for (const [dx, dz] of shuffle(DIRS4.slice())) {
     const cells = [];
     for (let s = 1; s <= steps; s++) { const x = cx + dx * s, z = cz + dz * s; if (!inField(x, z)) break; cells.push(idx(x, z)); }
-    if (cells.length < steps || !cells.every(cellFree)) continue;
+    if (cells.length < steps || !cells.every((c) => cellFree(c) && roomAt(c % N) === h.room)) continue;
     h.ai.queue = [];
     cells.forEach((c, s) => { for (let k = 0; k <= s; k++) h.ai.queue.push(c); });
     h.ai.towers++;
@@ -1164,26 +1301,33 @@ function humanAI(h, dt) {
       }
     } else {
       if (ai.buildT <= 0) { ai.buildT = rand(2, 4); if (h.wood >= 6 && ai.towers < 2) planStair(h); }
-      let t = G.chest && hdist(G.chest, h) < 45 && G.chest.y < 0.1 ? G.chest : null;
-      if (!t) t = nearest(G.items, h, (it) => !it.magnet && hdist(it, h) < 10 && it.y < h.y + 1.5);
-      const box = nearest(G.boxes, h, (b) => !b.opened && b.y <= 0.05);
+      const mine = (p) => roomAt(Math.floor(p.x)) === h.room;
+      let t = G.chest && mine(G.chest) && G.chest.y < 0.1 ? G.chest : null;
+      if (!t) t = nearest(G.items, h, (it) => !it.magnet && hdist(it, h) < 10 && it.y < h.y + 1.5 && mine(it));
+      const box = nearest(G.boxes, h, (b) => !b.opened && b.y <= 0.05 && mine(b));
       if (!t || (box && hdist(box, h) < hdist(t, h) * 0.5)) t = box || t;
       mv = t ? seekPoint(h, t.x, t.z, 1, false) : wander(h, 1);
       if (Math.random() < 0.05) { const near = G.items.some((it) => !it.magnet && hdist(it, h) < 3.5); if (near) doPick(h); }
     }
   } else {
+    const onis = activeOnis().filter((o) => sameRoom(o, h)); // 見えるのは同じ部屋の鬼だけ
     let near = null, nd = Infinity;
-    for (const o of G.onis) { const d = hdist(o, h) * (o.stun > 0 ? 1.8 : 1); if (d < nd) { nd = d; near = o; } }
+    for (const o of onis) { const d = hdist(o, h) * (o.stun > 0 ? 1.8 : 1); if (d < nd) { nd = d; near = o; } }
     const here = cellOf(h);
     if (h.standTime > 3.5) { ai.banCell = here; ai.banT = 6; }
-    const threats = G.onis.filter((o) => o.stun <= 0 && hdist(o, h) < 9);
+    const threats = onis.filter((o) => o.stun <= 0 && hdist(o, h) < 9);
     const safeHere = threats.length > 0 && threats.every((o) => !canTouch(o, h)) && h.standTime <= 3.5 &&
                      !threats.some((o) => o.type === 'monster' && hdist(o, h) < 4);
-    const minOni = (p) => Math.min(...G.onis.map((o) => hdist(o, p) * (o.stun > 0 ? 1.8 : 1)));
-    const ally = nearest(G.humans, h, (a) => a.state === 'frozen' && hdist(a, h) < 14 && minOni(a) > 7);
+    const minOni = (p) => Math.min(...activeOnis().map((o) => hdist(o, p) * (o.stun > 0 ? 1.8 : 1)));
+    // 鬼のいない部屋の人は、通路が開いたら赤いランプの部屋へ救援に行く
+    const rescuer = !G.oniRooms.includes(h.room) && G.rescueOpened;
+    const ally = nearest(G.humans, h, (a) => a.state === 'frozen' && (rescuer ? true : hdist(a, h) < 14 && sameRoom(a, h)) && minOni(a) > (rescuer ? 8 : 7));
+    const away = roomAt(Math.floor(h.x)) !== h.room; // 救援で他の部屋に来ている
     if (safeHere) {
       h.yaw = Math.atan2(near.x - h.x, near.z - h.z);
-    } else if (ally && nd > 6) {
+    } else if (away && nd < 7) { // 救援中に鬼が近づいたら自分の部屋へ逃げ帰る
+      mv = seekPoint(h, ROOMS[h.room].home.x + 0.5, ROOMS[h.room].home.z + 0.5, 1, false);
+    } else if (ally && nd > (rescuer ? 7 : 6)) {
       mv = hdist(ally, h) > h.r * 2 + 0.25 ? seekPoint(h, ally.x, ally.z, 1, false) : { x: 0, z: 0 };
     } else if (nd < 10) {
       let r = null;
@@ -1193,6 +1337,8 @@ function humanAI(h, dt) {
       if (nd < 1.6 && near.stun <= 0 && h.stamina >= HIT_COST && ai.hitCd <= 0) {
         h.yaw = Math.atan2(near.x - h.x, near.z - h.z); doHit(h); ai.hitCd = 1.2;
       }
+    } else if (roomAt(Math.floor(h.x)) !== h.room) { // 救援が終わったら自分の部屋へ戻る
+      mv = seekPoint(h, ROOMS[h.room].home.x + 0.5, ROOMS[h.room].home.z + 0.5, 1, false);
     } else {
       mv = wander(h, 1, 0.5);
     }
@@ -1205,11 +1351,11 @@ function oniAI(o, dt) {
   let mv = { x: 0, z: 0 };
   if (o.stun > 0) { o.mv = mv; return; }
   {
-    const ok = G.humans.filter((h) => h.state === 'ok');
+    const ok = G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room); // 自分の部屋の人だけ
     let target = nearest(ok, o, (h) => canTouch(o, h)), waiting = false;
     if (!target) { target = nearest(ok, o); waiting = true; }
     if (!target) {
-      const fr = nearest(G.humans, o, (h) => h.state === 'frozen');
+      const fr = nearest(G.humans, o, (h) => h.state === 'frozen' && roomAt(Math.floor(h.x)) === o.room);
       mv = fr && hdist(fr, o) > 3 ? seekPoint(o, fr.x, fr.z, 0, false) : wander(o, 0, 0.4);
     } else {
       const d = hdist(o, target);
@@ -1238,7 +1384,7 @@ function checkStuck(e, dt) {
   if (wants && moved < 0.01) ai.stuckT += dt; else ai.stuckT = Math.max(0, ai.stuckT - dt);
   if (ai.stuckT > 0.7) {
     ai.stuckT = 0; ai.unstickT = 0.5; ai.unstickA = rand(0, TAU); ai.pathT = 0; ai.qT = 0;
-    if (e.kind === 'oni' && G.phase === 'night') doOniAttack(e);
+    if (e.kind === 'oni' && G.phase === 'night' && e.entered) doOniAttack(e);
     else if (e.kind === 'human') jump(e);
   }
 }
@@ -1247,18 +1393,27 @@ function checkStuck(e, dt) {
 // 更新
 // =====================================================================
 function update(dt) {
+  // 昼夜の切り替え(3秒かけて暗くする)
+  const target = G.phase === 'night' ? 1 : 0;
+  if (nightK !== target) { nightK = clamp(nightK + (target ? dt : -dt) / 3, 0, 1); applyLighting(); }
+  if (G.phase === 'select') { updateSelect(dt); return; }
   G.timeLeft -= dt;
   if (G.phase === 'day') {
     G.dayElapsed += dt;
-    if (G.player.kind === 'oni') $('waitTime').textContent = '夜まで ' + fmtTime(G.timeLeft);
-    else if (G.player.state === 'ok') { // 部屋に入ったら知らせる
-      const r = roomAt(Math.floor(G.player.x));
-      if (r >= 0 && r !== G.lastRoom) { G.lastRoom = r; toast(`${ROOMS[r].icon} ${ROOMS[r].name}に入った`); }
-    }
+    if (G.player.kind === 'oni') { const w = $('waitTime'); if (w) w.textContent = '夜まで ' + fmtTime(G.timeLeft); }
     if (G.dayElapsed >= G.nextEvent && G.nextEvent < DAY_TIME) { triggerEvent(); G.nextEvent += EVENT_INTERVAL; }
     if (G.rain) { G.rain.t -= dt; if (G.rain.t <= 0) { world.remove(G.rain.mesh); G.rain = null; } }
     if (G.timeLeft <= 0) { startNight(); return; }
-  } else if (G.timeLeft <= 0) { endGame(G.humans.some((h) => h.state !== 'out') ? 'human' : 'oni'); return; }
+  } else {
+    G.nightT += dt;
+    // 鬼のいない部屋があれば、RESCUE_OPEN秒後に通路が開く
+    if (!G.rescueOpened && G.nightT >= RESCUE_OPEN && G.oniRooms.length < ROOM_COUNT) {
+      G.rescueOpened = true; setGates(false);
+      if (G.player.kind === 'human' && G.player.state !== 'out')
+        telop(G.oniRooms.includes(G.player.room) ? '🚪 通路が開いた！ 仲間が救援に来られる' : '🚪 通路が開いた！ 赤いランプの部屋へ救援に行ける', '');
+    }
+    if (G.timeLeft <= 0) { endNight(); return; }
+  }
 
   // 建てるボタンの長押し
   if (buildPress.down && !buildPress.switched) {
@@ -1284,7 +1439,8 @@ function update(dt) {
   }
   // --- 鬼 ---
   for (const o of G.onis) {
-    if (G.phase === 'day') continue; // 昼は待機ルーム
+    if (G.phase !== 'night') continue; // 昼は待機ルーム
+    if (!o.entered) { o.enterT -= dt; if (o.enterT <= 0) oniEnters(o); else continue; }
     o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt);
     if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, z: 0 } : playerMove(); else { o.ai.pathT -= dt; o.ai.qT -= dt; oniAI(o, dt); }
     const sp = ONI[o.type].speed * (o.speedMul || 1);
@@ -1333,7 +1489,7 @@ function update(dt) {
 
   // --- 夜のルール ---
   if (G.phase === 'night') {
-    for (const o of G.onis) for (const h of G.humans)
+    for (const o of activeOnis()) for (const h of G.humans)
       if (h.state === 'ok' && hdist(o, h) < o.r + h.r + 0.1 && h.y < o.y + o.hgt && o.y < h.y + h.hgt) tryFreeze(o, h);
     for (const h of G.humans) {
       if (h.state === 'frozen') {
@@ -1341,6 +1497,7 @@ function update(dt) {
         h.thaw = help ? h.thaw + dt : Math.max(0, h.thaw - dt * 0.5);
         if (h.thaw >= (h.thawNeed || THAW_TIME)) {
           h.state = 'ok'; h.thaw = 0; G.stats.thaws++;
+          if (G.humans.some((a) => a.state === 'ok' && a !== h && hdist(a, h) < 1.2 && a.room !== roomAt(Math.floor(h.x)))) G.stats.rescues++;
           addFx(h.x, h.y + 2, h.z, '解凍!', '#7CFC9A'); burst(h.x, h.y + 1, h.z, 0x9bffc0, 14);
           if (h.isPlayer) toast('解凍された！');
           continue;
@@ -1358,6 +1515,7 @@ function update(dt) {
     }
     if (G.humans.every((h) => h.state === 'out')) { endGame('oni'); return; }
   }
+  updateLamps();
 
   // --- ブロック ---
   for (const b of G.blocks.slice()) {
@@ -1372,9 +1530,34 @@ function update(dt) {
   for (const f of G.fx) f.t += dt;
   G.fx = G.fx.filter((f) => { if (f.t > 1.1) { f.el.remove(); return false; } return true; });
 
-  // 昼夜の切り替え(3秒かけて暗くする)
-  const target = G.phase === 'night' ? 1 : 0;
-  if (nightK !== target) { nightK = clamp(nightK + (target ? dt : -dt) / 3, 0, 1); applyLighting(); }
+}
+
+// 救援ランプ: 凍結した人がいる部屋の扉の上が赤く光る
+function updateLamps() {
+  ROOMS.forEach((r, k) => {
+    const on = G.phase === 'night' && G.humans.some((h) => h.state === 'frozen' && roomAt(Math.floor(h.x)) === k);
+    const L = G3.lamps[k];
+    if (on && !L.on && G.player.kind === 'human' && G.player.state !== 'out' && roomAt(Math.floor(G.player.x)) !== k)
+      toast(`🚨 ${r.icon}${r.name}の扉のランプが赤く光った！`);
+    L.on = on;
+  });
+}
+
+// 警告音と「鬼が来た！」
+let actx = null;
+function initAudio() { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.resume) actx.resume(); } catch (_) {} }
+function showAlert() {
+  const el = $('alert'); el.style.display = 'block';
+  clearTimeout(showAlert.t); showAlert.t = setTimeout(() => (el.style.display = 'none'), 2600);
+  try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (_) {}
+  if (!actx) return;
+  const t0 = actx.currentTime;
+  for (let i = 0; i < 6; i++) {
+    const o = actx.createOscillator(), g = actx.createGain(), t = t0 + i * 0.2;
+    o.type = 'square'; o.frequency.value = i % 2 ? 660 : 880;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.15, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+    o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + 0.19);
+  }
 }
 
 function applyLighting() {
@@ -1396,6 +1579,8 @@ function syncVisuals(time) {
   for (const h of G.humans) {
     const m = h.mesh;
     if (h.state === 'out') { m.g.visible = false; continue; }
+    // 鬼は自分の部屋に入って初めて、そこにいる人が見える
+    m.g.visible = !(G.player.kind === 'oni' && (G.phase !== 'night' || roomAt(Math.floor(h.x)) !== G.player.room));
     m.g.position.set(h.x, h.y, h.z); m.g.rotation.y = h.yaw;
     m.ice.visible = h.state === 'frozen';
     m.stick.visible = h.swing > 0; m.stick.rotation.y = h.swing > 0 ? (h.swing / 0.3 - 0.5) * 2.4 : 0;
@@ -1405,7 +1590,8 @@ function syncVisuals(time) {
   // 鬼
   for (const o of G.onis) {
     const m = o.mesh;
-    m.g.visible = G.phase === 'night';
+    // 人には、自分と同じ部屋にいる鬼だけが見える(どの部屋を選んだかは知らされない)
+    m.g.visible = G.phase === 'night' && o.entered && (G.player.kind === 'oni' || sameRoom(o, focusOf()));
     m.g.position.set(o.x, o.y, o.z); m.g.rotation.y = o.yaw;
     m.parts.rotation.x = o.swing > 0 ? Math.sin((o.swing / 0.3) * Math.PI) * 0.35 : 0;
     const legs = m.g.userData.legs, sw = Math.sin(o.walkT * 3) * 0.5;
@@ -1434,7 +1620,10 @@ function syncVisuals(time) {
     let ox = 0, oz = 0;
     if (b.shake > 0 || b.crumble >= 0) { const a = b.crumble >= 0 ? 0.07 : 0.05; ox = rand(-a, a); oz = rand(-a, a); }
     b.mesh.position.set(cX(b.i) + ox, b.visY + b.h / 2, cZ(b.i) + oz);
+    b.mesh.visible = !(G.player.kind === 'oni' && roomAt(b.i % N) !== G.player.room); // 鬼には他の部屋の建物は見えない
   }
+  // 救援ランプ(点滅)
+  if (G3.lamps) G3.lamps.forEach((L) => L.mat.color.set(L.on ? (Math.sin(time / 140) > 0 ? 0xff2020 : 0x8a0e0e) : 0x3a2222));
   // パーティクル
   let kp = 0;
   for (const p of G.parts) {
@@ -1461,6 +1650,7 @@ function syncVisuals(time) {
     if (!G.spectate || G.spectate.state === 'out') G.spectate = G.humans.find((h) => h.state !== 'out') || focus;
     focus = G.spectate;
   }
+
   G.cam.lerp(_v.set(focus.x, focus.y + 1.2, focus.z), 0.15);
   // 木や小屋にさえぎられたらカメラを近づける
   let f = 1;
@@ -1484,7 +1674,7 @@ function syncVisuals(time) {
 }
 
 let camDistK = 1;
-const OB_HEIGHT = { [OB_FENCE]: 1.2, [OB_ROCK]: 0.9, [OB_TREE]: 3.0, [OB_HUT]: 3.6, [OB_DIV]: 3.2, [OB_FWALL]: 2.6, [OB_TANK]: 2.2, [OB_GATE]: 2.4 };
+const OB_HEIGHT = { [OB_FENCE]: 1.2, [OB_ROCK]: 0.9, [OB_TREE]: 3.0, [OB_HUT]: 3.6, [OB_DIV]: 3.2, [OB_FWALL]: 2.6, [OB_TANK]: 2.2, [OB_GATE]: 2.4, 0: 0 };
 function obstHeightAt(x, z) {
   const fx = Math.floor(x), fz = Math.floor(z);
   if (!inField(fx, fz)) return 0;
@@ -1523,7 +1713,7 @@ function renderMinimapBase() {
   miniBase = document.createElement('canvas'); miniBase.width = miniBase.height = N * 4;
   const c = miniBase.getContext('2d');
   c.fillStyle = '#4f8a45'; c.fillRect(0, 0, N * 4, N * 4);
-  c.fillStyle = '#77787c'; c.fillRect((DIV1 + 1) * 4, 0, (N - DIV1 - 1) * 4, N * 4);
+  for (const r of ROOMS) if (r.terrain === 'factory') { c.fillStyle = '#77787c'; c.fillRect(r.x0 * 4, 0, (r.x1 - r.x0 + 1) * 4, N * 4); }
   const col = { [OB_FENCE]: '#8b5a2b', [OB_ROCK]: '#9aa1aa', [OB_TREE]: '#1f5e2a', [OB_HUT]: '#e8d6b0', [OB_DIV]: '#2a2c33', [OB_FWALL]: '#3e4249', [OB_TANK]: '#b5652b' };
   for (let i = 0; i < N * N; i++) if (obst[i]) { c.fillStyle = col[obst[i]]; c.fillRect((i % N) * 4, ((i / N) | 0) * 4, 4, 4); }
   c.font = 'bold 22px sans-serif'; c.textAlign = 'center'; c.fillStyle = 'rgba(255,255,255,.85)'; c.strokeStyle = 'rgba(0,0,0,.6)'; c.lineWidth = 4;
@@ -1534,9 +1724,10 @@ function drawMinimap(time) {
   c.drawImage(miniBase, 0, 0, W, W);
   if (nightK > 0) {
     c.fillStyle = `rgba(5,10,30,${0.55 * nightK})`; c.fillRect(0, 0, W, W);
-    if (G.room !== undefined) { const r = ROOMS[1 - G.room]; c.fillStyle = 'rgba(0,0,0,.6)'; c.fillRect(r.x0 * s, 0, (r.x1 - r.x0 + 1) * s, W); }
   }
-  for (const b of G.blocks) if (b === cols[b.i][cols[b.i].length - 1]) {
+  const oniView = G.player.kind === 'oni';
+  if (oniView) for (const r of ROOMS) if (r.k !== G.player.room) { c.fillStyle = 'rgba(0,0,0,.7)'; c.fillRect(r.x0 * s, 0, (r.x1 - r.x0 + 1) * s, W); }
+  for (const b of G.blocks) if (b === cols[b.i][cols[b.i].length - 1] && !(oniView && roomAt(b.i % N) !== G.player.room)) {
     c.fillStyle = b.type === 'wall' ? '#e2e6ea' : `hsl(30, 60%, ${35 + Math.min(heights[b.i], 6) * 6}%)`;
     c.fillRect((b.i % N) * s, ((b.i / N) | 0) * s, s, s);
   }
@@ -1544,12 +1735,14 @@ function drawMinimap(time) {
   const u = W / 120;
   if (G.phase === 'day') {
     for (const b of G.boxes) if (!b.big) dot(b.x, b.z, 1.2 * u, '#f0a050');
-    if (G.player.kind === 'oni') for (const f of G.fruits) dot(f.x, f.z, 1.8 * u, '#ff4d4d');
   }
   if (G.chest && Math.sin(time / 150) > -0.3) dot(G.chest.x, G.chest.z, 4 * u, '#ffd34d');
   if (G.rain) { c.strokeStyle = '#ffd34d'; c.lineWidth = 1.5 * u; c.beginPath(); c.arc(G.rain.x * s, G.rain.z * s, G.rain.r * s, 0, TAU); c.stroke(); }
-  for (const h of G.humans) if (h.state !== 'out') dot(h.x, h.z, (h.isPlayer ? 3.2 : 2.4) * u, h.state === 'frozen' ? '#bdefff' : h.isPlayer ? '#fff' : '#4d9bff');
-  if (G.phase === 'night') for (const o of G.onis) dot(o.x, o.z, (o.isPlayer ? 3.4 : 2.8) * u, o.isPlayer ? '#fff' : '#ff3b3b');
+  for (const h of G.humans) if (h.state !== 'out' && !(oniView && roomAt(Math.floor(h.x)) !== G.player.room))
+    dot(h.x, h.z, (h.isPlayer ? 3.2 : 2.4) * u, h.state === 'frozen' ? '#bdefff' : h.isPlayer ? '#fff' : '#4d9bff');
+  if (G.phase === 'night') for (const o of G.onis) if (o.entered && (oniView || sameRoom(o, focusOf()))) dot(o.x, o.z, (o.isPlayer ? 3.4 : 2.8) * u, o.isPlayer ? '#fff' : '#ff3b3b');
+  // 救援ランプ
+  if (G3.lamps) G3.lamps.forEach((L, k) => { if (L.on && Math.sin(time / 140) > -0.2) { const r = ROOMS[k]; c.strokeStyle = '#ff2020'; c.lineWidth = 2.5 * u; c.beginPath(); c.arc((r.cx + 0.5) * s, 2 * s, 5 * u, 0, TAU); c.stroke(); dot(r.cx + 0.5, 2, 3 * u, '#ff2020'); } });
   // カメラの向き
   const p = G.player.state === 'out' && G.spectate ? G.spectate : G.player;
   const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
@@ -1560,9 +1753,16 @@ function drawMinimap(time) {
 // =====================================================================
 // HUD
 // =====================================================================
+// 全画面の待機ルーム/部屋選択を出すか
+function overlayMode() {
+  if (!G || !playing()) return null;
+  if (G.player.kind === 'oni') return G.phase === 'night' ? null : 'wait';
+  return G.phase === 'select' ? 'select' : null;
+}
 function setupHUD(hide) {
-  const show = !hide && playing() && !(G.player.kind === 'oni' && G.phase === 'day');
-  $('wait').style.display = !hide && playing() && G.player.kind === 'oni' && G.phase === 'day' ? 'flex' : 'none';
+  const ov = hide ? null : overlayMode();
+  const show = !hide && playing() && !ov;
+  $('wait').style.display = ov ? 'flex' : 'none';
   document.querySelectorAll('.hud').forEach((el) => (el.style.display = show ? '' : 'none'));
   if (show) {
     $('topbar').style.display = 'flex'; $('status').style.display = 'flex'; $('minimap').style.display = 'block'; $('buttons').style.display = 'block'; $('joy').style.display = 'block';
@@ -1576,7 +1776,7 @@ function setupHUD(hide) {
 }
 function updateHUD() {
   const night = G.phase === 'night';
-  const ph = $('phase'); ph.textContent = night ? '🌙 夜' : '☀ 昼'; ph.className = 'pill ' + (night ? 'night' : 'day');
+  const ph = $('phase'); ph.textContent = night ? `🌙 第${G.round}夜` : `☀ 昼 ${G.round}/${NIGHT_COUNT}`; ph.className = 'pill ' + (night ? 'night' : 'day');
   $('timer').textContent = fmtTime(G.timeLeft);
   $('alive').textContent = `人 ${G.humans.filter((h) => h.state !== 'out').length}/${HUMAN_COUNT}`;
   const p = G.player;
@@ -1587,11 +1787,12 @@ function updateHUD() {
     html = `<div class="row"><span class="wood">🪵 木材 ${p.wood}</span><span class="stone">🪨 石 ${p.stone}</span></div>
       <div class="row">建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildMode ? ' <span style="color:#ffd34d">▶設置待ち</span>' : ''}</div>
       <div class="row"><span style="font-size:11px">スタミナ</span><div class="bar"><div style="width:${(p.stamina / STAMINA_MAX) * 100}%"></div></div></div>
-      <div class="row" style="font-size:11px;color:#c8d3e6">高さ ${p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>`;
+      <div class="row" style="font-size:11px;color:#c8d3e6">高さ ${p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>
+      <div class="row" style="font-size:11px">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ROOMS[p.room].name : '-'}${night && !G.rescueOpened && G.oniRooms.length < ROOM_COUNT ? `　通路が開くまで ${Math.max(0, Math.ceil(RESCUE_OPEN - G.nightT))}秒` : night && G.gatesOpen ? '　🚪通路オープン' : ''}</div>`;
     $('buildLabel').textContent = PARTS[p.buildType].name;
   } else {
     html = `<div class="row">${ONI[p.type].name}</div>
-      <div class="row">部屋: ${G.room !== undefined ? ROOMS[G.room].icon + ' ' + ROOMS[G.room].name : '-'}</div>
+      <div class="row">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ' ' + ROOMS[p.room].name : '-'}${!p.entered ? ' <span style="color:#ffd34d">扉を開けている…</span>' : ''}</div>
       <div class="row" style="font-size:11px;color:#ffd34d">強化: ${p.boost ? BOOSTS[p.boost].name : '-'}</div>`;
   }
   const s = $('status'); if (s._h !== html) { s.innerHTML = html; s._h = html; }
@@ -1615,25 +1816,28 @@ function showSide() {
   scene_ = 'side';
   showScreen(`<h2>陣営をえらぶ</h2>
     <div class="row2">
-      <button class="choice c-human" data-act="human">🧑 人<span>資材を集めて足場を積む。<br>夜明けまで1人でも生き残れば勝ち</span></button>
+      <button class="choice c-human" data-act="human">🧑 人<span>部屋を選んで資材を集め、足場を積む。<br>${NIGHT_COUNT}回の夜を1人でも生きのびれば勝ち</span></button>
       <button class="choice c-oni" data-act="oni">👹 鬼<span>昼は待機ルームで種類・部屋・強化を選び、<br>夜に人をタッチして凍らせる。全員脱落で勝ち</span></button>
     </div>`);
 }
 function renderWait() {
   const p = G.player;
-  const mates = G.onis.filter((o) => o !== p).map((o) => `CPU鬼: ${ONI[o.type].name}（部屋と強化を選択済み）`).join('<br>');
+  const split = splitMode();
+  const mates = G.onis.filter((o) => o !== p).map((o) => `CPU鬼: ${ONI[o.type].name}（${split ? ROOMS[o.vote].icon + ROOMS[o.vote].name + 'を選択' : '投票済み'}）`).join('<br>');
   const sel = (on) => (on ? ' sel' : '');
+  const toNight = G.phase === 'select' ? G.selectT + DAY_TIME : G.timeLeft;
   $('wait').innerHTML = `
-    <div class="wtop"><h2>👹 鬼の待機ルーム</h2><div class="pill" id="waitTime">夜まで ${fmtTime(G.timeLeft)}</div></div>
-    <p class="note">人たちは今、資材を集めて建築している…（鬼からは見えない）。夜になったら選んだ部屋に出撃！</p>
+    <div class="wtop"><h2>👹 鬼の待機ルーム（第${G.round}夜の準備）</h2><div class="pill" id="waitTime">夜まで ${fmtTime(toNight)}</div></div>
+    <p class="note">人たちは部屋に分かれて資材集め・建築中…（各部屋の人数も建築も鬼からは見えない）。夜になったら選んだ部屋の扉から突入！</p>
     <div class="wcols">
       <div class="wcol"><h3>1. 鬼の種類</h3>
         <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐺 肉食動物<span>足が速い。ジャンプは低い。高い場所の人にはタッチできない</span></button>
         <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 モンスター<span>遅いが壁・足場を1〜2回で壊す。高さ1まで届く</span></button>
       </div>
-      <div class="wcol"><h3>2. 部屋に投票</h3>
-        ${ROOMS.map((r) => `<button class="wbtn${sel(p.vote === r.k)}" data-w="vote:${r.k}">${r.icon} ${r.name}<span>${r.desc}</span></button>`).join('')}
-        <div class="mates">鬼が複数なら投票で決定、同数ならランダム</div>
+      <div class="wcol"><h3>2. ${split ? `部屋をえらぶ（定員${ONI_ROOM_CAP}匹）` : '部屋に投票'}</h3>
+        ${ROOMS.map((r) => { const full = split && oniPop(r.k, p) >= ONI_ROOM_CAP;
+          return `<button class="wbtn${sel(p.vote === r.k)}" data-w="vote:${r.k}" ${full ? 'disabled' : ''}>${r.icon} ${r.name}<span>${r.desc}</span>${split ? `<span class="who">鬼 ${oniPop(r.k, p) + (p.vote === r.k ? 1 : 0)}/${ONI_ROOM_CAP}</span>` : ''}</button>`; }).join('')}
+        <div class="mates">${split ? `鬼が${ONI_SPLIT_MIN}匹以上なので各自で部屋を選ぶ` : '鬼全員の投票で1部屋に決定（同数ならランダム）'}</div>
       </div>
       <div class="wcol"><h3>3. 強化を1つ</h3>
         ${Object.entries(BOOSTS).map(([k, b]) => `<button class="wbtn${sel(p.boost === k)}" data-w="boost:${k}">${b.name}<span>${b.desc}</span></button>`).join('')}
@@ -1641,15 +1845,36 @@ function renderWait() {
     </div>
     <div class="mates">${mates}${p.vote === null || !p.boost ? '<br>選ばなかった項目は夜にランダムで決まります' : '<br>✅ 準備完了！ 夜を待とう'}</div>`;
 }
+// 人の部屋選択画面(早い者勝ち・定員制)
+function renderSelect() {
+  const p = G.player, out = p.state === 'out';
+  const names = (k) => G.humans.filter((h) => h.state !== 'out' && h.pick === k).map((h) => (h.isPlayer ? '★あなた' : h.name)).join(' ');
+  const html = `
+    <div class="wtop"><h2 style="color:#9fd0ff">🚪 部屋をえらぶ（${G.round}日目）</h2><div class="pill" id="selTime">のこり ${Math.max(0, Math.ceil(G.selectT))}秒</div></div>
+    <p class="note">${out ? 'あなたは脱落しています（観戦中）' : `早い者勝ち・各部屋の定員は${HUMAN_ROOM_CAP}人。選ばないと空いている部屋に自動で入ります。資材は持ち越し、建物は部屋に残ります。`}</p>
+    <div class="wcols">
+      ${ROOMS.map((r) => { const n = roomPop(r.k), full = roomPop(r.k, p) >= HUMAN_ROOM_CAP && p.pick !== r.k;
+        return `<div class="wcol"><button class="wbtn${p.pick === r.k ? ' sel' : ''}" data-w="room:${r.k}" ${full || out ? 'disabled' : ''}>
+          ${r.icon} ${r.name}${p.room === r.k ? '（前回の部屋）' : ''}<span>${r.desc}</span><span class="who">👥 ${n}/${HUMAN_ROOM_CAP}人 ${full ? '満員' : ''}</span>
+          <span class="who">${names(r.k) || '　'}</span></button></div>`; }).join('')}
+    </div>`;
+  const w = $('wait'); if (w._h !== html) { w.innerHTML = html; w._h = html; }
+}
 $('wait').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-w]'); if (!b || !G) return;
+  const b = e.target.closest('[data-w]'); if (!b || !G || b.disabled) return;
   const [k, v] = b.dataset.w.split(':'), p = G.player;
+  if (k === 'room') {
+    if (G.phase === 'select' && p.kind === 'human' && p.state !== 'out' && roomPop(+v, p) < HUMAN_ROOM_CAP) p.pick = +v;
+    renderSelect(); return;
+  }
+  if (k === 'vote' && splitMode() && oniPop(+v, p) >= ONI_ROOM_CAP) return;
   if (k === 'type') { // CPU鬼が同じ種類なら、もう一方の種類に変える
     setOniType(p, v); playerOniType = v;
     for (const o of G.onis) if (o !== p && o.type === v) setOniType(o, v === 'carnivore' ? 'monster' : 'carnivore');
   }
   else if (k === 'vote') p.vote = +v;
   else if (k === 'boost') p.boost = v;
+  $('wait')._h = '';
   renderWait();
 });
 function showOniType() {
@@ -1663,6 +1888,7 @@ function showOniType() {
 }
 $('screen').addEventListener('click', (e) => {
   const b = e.target.closest('[data-act]'), act = b ? b.dataset.act : '';
+  initAudio();
   if (scene_ === 'title') { tryFullscreen(); showSide(); return; }
   if (act === 'human') { playerSide = 'human'; startGame(); }
   else if (act === 'oni') { playerSide = 'oni'; startGame(); } // 鬼の種類は待機ルームで選ぶ
