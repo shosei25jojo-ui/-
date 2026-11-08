@@ -79,6 +79,10 @@
   #cross::before, #cross::after { content: ''; position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 2px #000, 0 0 1px #000; }
   #cross::before { left: 11px; top: 0; width: 2px; height: 24px; }
   #cross::after { top: 11px; left: 0; height: 2px; width: 24px; }
+  #lock { position: fixed; left: 0; top: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px; pointer-events: none; display: none;
+          border: 3px solid #ff3b3b; border-radius: 8px; box-shadow: 0 0 8px #ff3b3b; animation: lockSpin 1.2s linear infinite; z-index: 5; }
+  #lock::after { content: 'LOCK'; position: absolute; left: 50%; top: -18px; transform: translateX(-50%) rotate(0); font-size: 10px; font-weight: 900; color: #ff6b6b; }
+  @keyframes lockSpin { from { transform: rotate(0); } to { transform: rotate(90deg); } }
   #bBuild .ring { position: absolute; inset: -7px; border-radius: 50%; border: 4px solid transparent; }
 
   /* ---------- 画面 ---------- */
@@ -149,6 +153,7 @@
 <div id="toast"></div>
 
 <div id="cross" class="hud"></div>
+<div id="lock"></div>
 <div class="btn hud" id="bView">👁<small id="viewLabel">主観</small></div>
 <div id="joy" class="hud"><div id="knob"></div></div>
 <div id="buttons" class="hud">
@@ -217,7 +222,7 @@ const EVENT_INTERVAL = 30;    // 昼のランダムイベントの間隔(秒)
 const PARTS = {
   scaffold: { name: '足場', wood: 2, stone: 0, h: 1, hp: 4 },
   wall:     { name: '壁',   wood: 0, stone: 3, h: 2, hp: 8 },
-  roof:     { name: '屋根', wood: 2, stone: 2, h: 1, hp: 5, slab: true }, // 薄い板。UFOのビームを防ぐ
+  roof:     { name: '屋根', wood: 2, stone: 2, h: 1, hp: 4, slab: true }, // 薄い板。UFOのビームを防ぐ
 };
 const PART_ORDER = ['scaffold', 'wall', 'roof'];
 const BUILD_REACH = 4;               // 照準から何マス先まで建てられるか
@@ -246,6 +251,8 @@ const BEAM_RATE = 0.15;              // 凍結ビームの連射間隔(秒)。�
 const BEAM_RANGE = 16;               // ビームの届く距離
 const BEAM_MIN_DOWN = 0.3;           // ビームは必ず斜め下へ(下向き成分の最小値)
 const BEAM_BREAK_TIME = 1;           // ビームを当て続けて建物を壊す時間(1マスあたり秒。壁は2マスなので2秒)
+const BEAM_DPS = 4 / BEAM_BREAK_TIME; // ビームの毎秒ダメージ(足場HP4=1秒、壁HP8=2秒)
+// 鬼が壊せる地形とそのHP(柵と部屋の仕切りは壊せない)。ビームなら HP/4 秒で壊れる
 const UFO_MIN_HEIGHT = 4, UFO_MAX_HEIGHT = 10;
 const BEAM_RADIUS = 1.3;             // UFOの真下とみなす範囲
 const UFO_STUN = 3;                  // 叩かれたUFOが操作不能になる秒数
@@ -289,6 +296,9 @@ if (typeof THREE === 'undefined') { $('loadErr').style.display = 'flex'; throw n
 // =====================================================================
 // obst: 0=なし 1=柵 2=岩 3=木 4=小屋   cols: 各マスに積まれたブロック   heights: 各マスの高さ
 const OB_FENCE = 1, OB_ROCK = 2, OB_TREE = 3, OB_HUT = 4, OB_DIV = 5, OB_FWALL = 6, OB_TANK = 7, OB_GATE = 8;
+const TERRAIN_HP = { [OB_TREE]: 4, [OB_ROCK]: 8, [OB_HUT]: 20, [OB_FWALL]: 8, [OB_TANK]: 6 };
+const TERRAIN_NAME = { [OB_TREE]: '木', [OB_ROCK]: '岩', [OB_HUT]: '小屋', [OB_FWALL]: '工場の壁', [OB_TANK]: 'タンク' };
+let terrHP = new Float32Array(0), terrInst = new Map(), hutOf = new Int16Array(0);
 // heights: 地面から続くブロックの上面(歩ける高さ)  clearance: その上の空き(頭上の高さ)  topH: 一番上のブロックの上面
 let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), clearance = new Float32Array(N * N), topH = new Float32Array(N * N), cols = [], huts = [];
 let vox = [];                        // ボクセル: vox[lv*N*N + i] = そのマスを占めるブロック
@@ -331,6 +341,9 @@ function genField() {
     for (const [dx, dz] of DIRS4) { const j = idx(x + dx, z + dz); if (!obst[j] && !seen[j]) { seen[j] = 1; q.push(j); } }
   }
   for (let i = 0; i < N * N; i++) if (!obst[i] && !seen[i]) { const r = ROOMS[roomAt(i % N)]; obst[i] = r && r.terrain === 'factory' ? OB_FWALL : OB_ROCK; }
+  terrHP = new Float32Array(N * N); hutOf = new Int16Array(N * N).fill(-1); terrInst = new Map();
+  for (let i = 0; i < N * N; i++) if (TERRAIN_HP[obst[i]]) terrHP[i] = TERRAIN_HP[obst[i]];
+  huts.forEach((h, j) => { h.hp = TERRAIN_HP[OB_HUT]; for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) hutOf[idx(h.x + dx, h.z + dz)] = j; });
 }
 // ---- 森: 木が多く見通しが悪い ----
 function genForest(F, reserved) {
@@ -433,7 +446,7 @@ function bfs(start, o) {
   bPrev.fill(-1);
   const lim = o.room === undefined ? -1 : o.room;
   const need = o.hgt || HUMAN_H;
-  const H = (i) => (obst[i] || (lim >= 0 && roomOfX[i % N] !== lim) || (!o.breakBlocks && clearance[i] < need) ? Infinity : o.breakBlocks ? 0 : heights[i]);
+  const H = (i) => ((obst[i] && !(o.breakBlocks && TERRAIN_HP[obst[i]])) || (lim >= 0 && roomOfX[i % N] !== lim) || (!o.breakBlocks && clearance[i] < need) ? Infinity : o.breakBlocks ? 0 : heights[i]);
   const maxUp = (o.maxUp || 0) + 0.01, maxD = o.maxDepth || 9999;
   let head = 0, tail = 0; bQ[tail++] = start; bPrev[start] = start; bDepth[start] = 0;
   while (head < tail) {
@@ -623,12 +636,13 @@ function buildFieldMeshes() {
     const s = rand(0.85, 1.25), x = cX(i) + rand(-0.1, 0.1), z = cZ(i) + rand(-0.1, 0.1);
     _m.compose(_v.set(x, 0.5 * s, z), _q.identity(), _s.set(s, s, s)); trunk.setMatrixAt(k, _m);
     _m.compose(_v.set(x, (1 + 1.0) * s, z), _q.setFromEuler(_e.set(0, rand(0, TAU), 0)), _s.set(s, s, s)); leaves.setMatrixAt(k, _m);
+    terrInst.set(i, [[trunk, k], [leaves, k]]);
   });
   trunk.count = leaves.count = trees.length;
   const rockMesh = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.62, 0), lam(0x8f979f), Math.max(1, rocks.length));
   rocks.forEach((i, k) => {
     _m.compose(_v.set(cX(i), 0.38, cZ(i)), _q.setFromEuler(_e.set(rand(0, 1), rand(0, TAU), rand(0, 1))), _s.set(rand(0.9, 1.15), rand(0.75, 1.1), rand(0.9, 1.15)));
-    rockMesh.setMatrixAt(k, _m);
+    rockMesh.setMatrixAt(k, _m); terrInst.set(i, [[rockMesh, k]]);
   });
   rockMesh.count = rocks.length;
   [trunk, leaves, rockMesh].forEach((m) => { m.frustumCulled = false; world.add(m); });
@@ -638,7 +652,7 @@ function buildFieldMeshes() {
   for (let i = 0; i < N * N; i++) { if (obst[i] === OB_FWALL) fw.push(i); else if (obst[i] === OB_DIV) dv.push(i); else if (obst[i] === OB_TANK) tk.push(i); }
   const inst = (geo, mat, list, fn) => {
     const m = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length));
-    list.forEach((i, k) => { fn(i); m.setMatrixAt(k, _m); });
+    list.forEach((i, k) => { fn(i); m.setMatrixAt(k, _m); if (TERRAIN_HP[obst[i]]) terrInst.set(i, [[m, k]]); });
     m.count = list.length; m.frustumCulled = false; world.add(m); return m;
   };
   inst(GEO.small, MAT.fwall, fw, (i) => _m.compose(_v.set(cX(i), 1.3, cZ(i)), _q.identity(), _s.set(1, 2.6, 1)));
@@ -680,7 +694,7 @@ function buildFieldMeshes() {
     const roof = new THREE.Mesh(new THREE.ConeGeometry(2.5, 1.5, 4), roofM); roof.position.y = 2.85; roof.rotation.y = Math.PI / 4; g.add(roof);
     const door = new THREE.Mesh(GEO.small, doorM); door.scale.set(0.75, 1.3, 0.06); door.position.set(0, 0.65, 1.46); g.add(door);
     const win = new THREE.Mesh(GEO.small, lam(0x6fb6e8)); win.scale.set(0.06, 0.5, 0.6); win.position.set(1.46, 1.3, 0); g.add(win);
-    world.add(g);
+    world.add(g); h.mesh = g;
   }
 
   // 動くもの用のインスタンスプール
@@ -729,6 +743,28 @@ function makeHumanMesh(color, isPlayer) {
   world.add(g);
   return { g, lantern, ice, stick };
 }
+function applyAnim(o, m) {
+  const P = m.parts, arms = m.g.userData.arms;
+  P.position.set(0, 0, 0); P.rotation.set(0, 0, 0);
+  if (arms) arms.forEach((a) => a.rotation.set(0, 0, 0));
+  const a = o.anim;
+  if (!a || a.t >= a.dur || (!arms && ['smash', 'sweep', 'stomp'].includes(a.type))) return;
+  const p = a.t / a.dur, s = Math.sin(p * Math.PI);
+  switch (a.type) {
+    case 'bite':   P.position.z = s * 0.55; P.rotation.x = s * 0.3; break;               // かみつき: 前に突進
+    case 'swipe':  P.rotation.y = Math.sin(p * TAU) * 0.7; P.rotation.z = s * 0.25; break; // ひっかき: 体をひねる
+    case 'pounce': P.position.y = s * 0.8; P.position.z = s * 0.6; P.rotation.x = (p < 0.5 ? -0.5 : 0.5) * s; break; // とびかかり
+    case 'smash': { // 両腕を振り上げてたたきつける
+      const r = p < 0.55 ? -(p / 0.55) * 2.8 : -2.8 + ((p - 0.55) / 0.45) * 3.6;
+      arms.forEach((ar) => (ar.rotation.x = r)); P.rotation.x = p < 0.55 ? -0.15 * (p / 0.55) : 0.3 * s; break;
+    }
+    case 'sweep': // 腕をなぎはらう
+      P.rotation.y = Math.sin(p * Math.PI * 1.5) * 0.9; arms[1].rotation.z = s * 1.4; arms[1].rotation.x = -s * 1.2; break;
+    case 'stomp': // 跳んで踏みつけ(衝撃波)
+      P.position.y = Math.max(0, Math.sin(Math.min(1, p / 0.7) * Math.PI)) * 0.7; arms.forEach((ar, k) => (ar.rotation.z = (k ? 1 : -1) * s * 0.9)); break;
+    case 'recoil': P.rotation.x = -s * 0.25; P.position.y = s * 0.12; break;           // UFO: 発射の反動
+  }
+}
 function makeOniMesh(type) {
   const g = new THREE.Group(), parts = new THREE.Group(); g.add(parts);
   if (type === 'carnivore') { // 四足歩行
@@ -760,7 +796,10 @@ function makeOniMesh(type) {
     const legs = [addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, -0.3, 0.48, 0), addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, 0.3, 0.48, 0)];
     addBox(parts, MAT.mons, 1.2, 1.15, 0.72, 0, 1.52, 0);
     addBox(parts, MAT.mons, 0.78, 0.68, 0.68, 0, 2.43, 0.04);
-    const arms = [addBox(parts, MAT.mons, 0.34, 1.15, 0.38, -0.79, 1.42, 0.05), addBox(parts, MAT.mons, 0.34, 1.15, 0.38, 0.79, 1.42, 0.05)];
+    const arms = [-1, 1].map((sx) => { // 肩を支点にして振れるように
+      const pv = new THREE.Group(); pv.position.set(sx * 0.79, 2.0, 0.05); parts.add(pv);
+      addBox(pv, MAT.mons, 0.34, 1.15, 0.38, 0, -0.58, 0); return pv;
+    });
     for (const sx of [-1, 1]) { const h = new THREE.Mesh(GEO.cone, MAT.horn); h.scale.set(0.12, 0.42, 0.12); h.position.set(sx * 0.27, 2.95, 0.02); h.rotation.z = -sx * 0.3; parts.add(h); }
     addBox(parts, MAT.dark, 0.5, 0.1, 0.05, 0, 2.24, 0.39);
     addSphere(parts, MAT.eye, 0.085, -0.18, 2.52, 0.38); addSphere(parts, MAT.eye, 0.085, 0.18, 2.52, 0.38);
@@ -822,7 +861,7 @@ function startGame() {
   $('labels').innerHTML = '';
   G = { phase: 'select', round: 1, timeLeft: 0, selectT: 0, dayElapsed: 0, nextEvent: EVENT_INTERVAL, nightT: 0,
         humans: [], onis: [], boxes: [], items: [], fruits: [], blocks: [], parts: [], fx: [], chest: null, rain: null,
-        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null, bolts: [],
+        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null, bolts: [], slashes: [],
         stats: { freezes: 0, thaws: 0, hits: 0, built: 0, rescues: 0 }, cam: new THREE.Vector3() };
   for (let i = 0; i < HUMAN_COUNT; i++) G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, ROOMS[0].home.x + 0.5, ROOMS[0].home.z + 0.5));
   const cpuTypes = shuffle(ONI_TYPES.filter((t) => playerSide !== 'oni' || t !== playerOniType));
@@ -916,7 +955,7 @@ function setOniType(o, type) {
   if (o.type === type) return;
   world.remove(o.mesh.g);
   const d = ONI[type];
-  o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false; o.captives = [];
+  o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false; o.captives = []; o.anim = null;
 }
 // ある地点の近く(同じ部屋)の空いているマスをランダムに選ぶ
 function spotsNear(e, n) {
@@ -992,7 +1031,7 @@ function endNight() {
 
 function endGame(winner) {
   scene_ = 'result';
-  $('wait').style.display = 'none';
+  $('wait').style.display = 'none'; $('lock').style.display = 'none';
   const alive = G.humans.filter((h) => h.state !== 'out').length, youWin = winner === playerSide;
   setupHUD(true);
   showScreen(`
@@ -1148,8 +1187,56 @@ function damageBlock(b, dmg) {
   burst(cX(b.i), (b.y0 + b.y1) / 2, cZ(b.i), blockColor(b), 6);
   if (b.hp <= 0) { addFx(cX(b.i), b.y1 + 0.4, cZ(b.i), 'バキッ!', '#fff'); removeBlock(b); settleBlocks(); }
 }
-// 鬼の攻撃: その列で鬼の体の高さにあるブロック(根元)を狙う → 上がまとめて崩れる
+// 攻撃モーション: 種類ごとに数パターンからランダムに選ぶ
+const ANIMS = { carnivore: ['bite', 'swipe', 'pounce'], monster: ['smash', 'sweep', 'stomp'], alien: ['recoil'] };
+function startAnim(o) {
+  const list = ANIMS[o.type], type = list[randInt(0, list.length - 1)];
+  const dur = { bite: 0.32, swipe: 0.34, pounce: 0.45, smash: 0.5, sweep: 0.45, stomp: 0.5, recoil: 0.14 }[type];
+  if (o.anim && o.anim.t < o.anim.dur && type === 'recoil') return;
+  o.anim = { type, t: 0, dur, fx: false };
+  o.swing = 0.3;
+}
+// 斬撃・衝撃波のエフェクト
+function slashFx(o, kind) {
+  const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
+  if (kind === 'ring') G.slashes.push({ kind, x: o.x, y: o.y + 0.05, z: o.z, yaw: o.yaw, t: 0, life: 0.45 });
+  else G.slashes.push({ kind, x: o.x + fx * 0.9, y: o.y + (o.type === 'monster' ? 1.6 : 0.7), z: o.z + fz * 0.9, yaw: o.yaw, t: 0, life: 0.22, flip: Math.random() < 0.5 });
+}
+// 地形(木・岩・小屋・工場の壁・タンク)も鬼の攻撃で壊れる
+const _zeroM = new THREE.Matrix4().makeScale(0, 0, 0);
+function damageTerrain(i, dmg) {
+  const t = obst[i];
+  if (!TERRAIN_HP[t]) return false;
+  const x = cX(i), z = cZ(i), col = { [OB_TREE]: 0x2f8f3e, [OB_ROCK]: 0x8f979f, [OB_HUT]: 0xe8d6b0, [OB_FWALL]: 0x7d8187, [OB_TANK]: 0xb5652b }[t];
+  burst(x, 1, z, col, 5);
+  if (t === OB_HUT) { // 小屋は9マスで1つ
+    const h = huts[hutOf[i]]; h.hp -= dmg;
+    if (h.mesh) h.mesh.position.x = h.x + 1.5 + rand(-0.06, 0.06);
+    if (h.hp > 0) return true;
+    for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) { const j = idx(h.x + dx, h.z + dz); obst[j] = 0; terrHP[j] = 0; clearMini(j); }
+    if (h.mesh) world.remove(h.mesh);
+    burst(h.x + 1.5, 1.5, h.z + 1.5, col, 30); addFx(h.x + 1.5, 3.5, h.z + 1.5, 'ドカーン!', '#ffd34d');
+    return true;
+  }
+  terrHP[i] -= dmg;
+  if (terrHP[i] > 0) return true;
+  obst[i] = 0; terrHP[i] = 0;
+  for (const [m, k] of terrInst.get(i) || []) { m.setMatrixAt(k, _zeroM); m.instanceMatrix.needsUpdate = true; }
+  burst(x, 1, z, col, 18); addFx(x, 2.4, z, 'バキッ!', '#fff');
+  clearMini(i);
+  return true;
+}
+// ミニマップの下絵から地形を消す
+function clearMini(i) {
+  if (!miniBase) return;
+  const c = miniBase.getContext('2d'), r = ROOMS[roomAt(i % N)];
+  c.fillStyle = r && r.terrain === 'factory' ? '#77787c' : '#4f8a45';
+  c.fillRect((i % N) * 4, ((i / N) | 0) * 4, 4, 4);
+}
+// 鬼の攻撃: 地形ならそれを、ブロックならその列で鬼の体の高さにあるブロック(根元)を狙う → 上がまとめて崩れる
 function attackCell(o, i) {
+  if (i < 0) return false;
+  if (TERRAIN_HP[obst[i]]) return damageTerrain(i, ONI[o.type].dmg * (o.dmgMul || 1));
   const col = cols[i]; if (!col || !col.length || ONI[o.type].fly) return false;
   const sorted = col.slice().sort((a, b) => a.y0 - b.y0);
   const b = sorted.find((x) => x.y1 > o.y + 0.05 && x.y0 < o.y + o.hgt) || sorted[0];
@@ -1185,7 +1272,7 @@ function doPick(h) {
 function doHit(h) {
   if (h.state !== 'ok') return;
   if (h.stamina < HIT_COST) { if (h.isPlayer) toast('スタミナが足りない'); return; }
-  h.stamina -= HIT_COST; h.swing = 0.3;
+  h.stamina -= HIT_COST; h.swing = 0.3; h.swingType = randInt(0, 1);
   let hit = false;
   for (const o of G.onis) {
     if (!o.entered || G.phase !== 'night') continue;
@@ -1213,9 +1300,25 @@ function coveredFromAbove(h, topY = 99) {
   return cov;
 }
 // 凍結ビーム: UFOから斜め下へ撃つ。人に当たれば凍結、建物に当たれば削る(1マス1秒ぶん当てると壊れる)
+// 自動ロックオン: 射程内で斜め下にいる人のうち、さえぎる物がなく一番近い人
+function lockTarget(o) {
+  let best = null, bd = Infinity;
+  for (const h of G.humans) {
+    if (h.state !== 'ok' || roomAt(Math.floor(h.x)) !== o.room) continue;
+    const dx = h.x - o.x, dy = h.y + 0.9 - (o.y + 0.05), dz = h.z - o.z, l = Math.hypot(dx, dy, dz);
+    if (l > BEAM_RANGE || dy / l > -BEAM_MIN_DOWN + 0.02) continue; // 斜め下にいる人だけ
+    let clear = true;
+    for (let t = 0.6; t < l - 0.4; t += 0.3) { if (aimSolid(o.x + dx / l * t, o.y + 0.05 + dy / l * t, o.z + dz / l * t)) { clear = false; break; } }
+    const score = l + (clear ? 0 : 100);
+    if (score < bd) { bd = score; best = h; }
+  }
+  return best;
+}
 function beamDir(o) {
   let d;
-  if (o.isPlayer) { // 照準(画面中央)の先に当たる地点へ向けて撃つ
+  const lk = o.isPlayer ? lockTarget(o) : null;
+  if (lk) d = { x: lk.x - o.x, y: lk.y + 0.9 - (o.y + 0.05), z: lk.z - o.z }; // ロックオンした人へ
+  else if (o.isPlayer) { // 照準(画面中央)の先に当たる地点へ向けて撃つ
     camera.getWorldDirection(_v);
     const c = camera.position; let t = 0;
     for (; t < 40; t += 0.25) {
@@ -1242,7 +1345,7 @@ function aimSolid(x, y, z) {
 function fireBolt(o) {
   if (o.stun > 0 || !o.entered || G.phase !== 'night') return;
   const d = beamDir(o), ox = o.x, oy = o.y + 0.05, oz = o.z;
-  let t = 0, hitH = null, hitB = null;
+  let t = 0, hitH = null, hitB = null, hitT = -1;
   for (; t < BEAM_RANGE; t += 0.12) {
     const x = ox + d.x * t, y = oy + d.y * t, z = oz + d.z * t;
     if (y <= 0) break;
@@ -1251,18 +1354,17 @@ function fireBolt(o) {
     const fx = Math.floor(x), fz = Math.floor(z);
     if (!inField(fx, fz)) break;
     const i = idx(fx, fz);
-    if (obst[i]) { if (y < (OB_HEIGHT[obst[i]] || 3)) break; else continue; }
+    if (obst[i]) { if (y < (OB_HEIGHT[obst[i]] || 3)) { hitT = i; break; } else continue; }
     hitB = cols[i].find((b) => y >= b.y0 && y < b.y1);
     if (hitB) break;
   }
   G.bolts.push({ x: ox, y: oy, z: oz, d, len: Math.max(0.3, t), t: 0 });
   const ex = ox + d.x * t, ey = oy + d.y * t, ez = oz + d.z * t;
   if (hitH) freezeByBeam(o, hitH);
-  else if (hitB) {
-    hitB.beamDmg = (hitB.beamDmg || 0) + BEAM_RATE; hitB.shake = 0.12;
-    burst(ex, ey, ez, 0x9ff3ff, 2);
-    if (hitB.beamDmg >= hitB.h * BEAM_BREAK_TIME - 1e-6) { addFx(cX(hitB.i), hitB.y1 + 0.3, cZ(hitB.i), 'パキン!', '#9ff3ff'); removeBlock(hitB); settleBlocks(); }
-  } else burst(ex, Math.max(0.05, ey), ez, 0x9ff3ff, 1);
+  else if (hitB) { burst(ex, ey, ez, 0x9ff3ff, 2); damageBlock(hitB, BEAM_RATE * BEAM_DPS + 1e-6); }
+  else if (hitT >= 0) { burst(ex, ey, ez, 0x9ff3ff, 2); damageTerrain(hitT, BEAM_RATE * BEAM_DPS + 1e-6); }
+  else burst(ex, Math.max(0.05, ey), ez, 0x9ff3ff, 1);
+  startAnim(o);
 }
 function freezeByBeam(o, h) {
   if (h.freezeCount >= MAX_FREEZE_COUNT) { eliminate(h, '即脱落!'); return; }
@@ -1298,7 +1400,7 @@ function eliminate(h, text) {
 function doOniAttack(o) {
   if (ONI[o.type].fly) { if (o.fireT <= 0) { fireBolt(o); o.fireT = BEAM_RATE; } return; }
   if (o.atkCd > 0 || o.stun > 0) return;
-  o.atkCd = ONI_ATTACK_CD; o.swing = 0.3;
+  o.atkCd = ONI_ATTACK_CD; startAnim(o);
   const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
   if (G.phase === 'night') {
     for (const h of G.humans) {
@@ -1311,7 +1413,7 @@ function doOniAttack(o) {
     }
   }
   const i = frontCell(o);
-  if (i < 0 || !cols[i].length) return;
+  if (i < 0 || (!cols[i].length && !TERRAIN_HP[obst[i]])) return;
   if (G.phase !== 'night') { if (o.isPlayer) toast('昼のあいだは建物を壊せない'); return; }
   attackCell(o, i);
 }
@@ -1699,7 +1801,7 @@ function oniAI(o, dt) {
       const d = hdist(o, target);
       if (target.y >= HIGH_Y && d < 1.9) { // 足場の上の人: 足場を壊す(モンスターは1〜2回、肉食動物は少しずつ)
         o.yaw = Math.atan2(target.x - o.x, target.z - o.z);
-        if (o.atkCd <= 0) { o.atkCd = ONI_ATTACK_CD; o.swing = 0.3; attackCell(o, cellOf(target)); }
+        if (o.atkCd <= 0) { o.atkCd = ONI_ATTACK_CD; startAnim(o); attackCell(o, cellOf(target)); }
       } else if (waiting && d < 2.6 && o.type === 'carnivore') { // 肉食動物は下で待ち伏せ(モンスターは近づいて壊す)
         o.yaw = Math.atan2(target.x - o.x, target.z - o.z);
       } else {
@@ -1707,9 +1809,9 @@ function oniAI(o, dt) {
       }
       if (!waiting && d < ONI_ATTACK_RANGE + o.r) { o.yaw = Math.atan2(target.x - o.x, target.z - o.z); doOniAttack(o); }
       // 経路上のブロックを壊して進む
-      if (ai.pBreak && ai.pNext >= 0 && cols[ai.pNext].length && Math.hypot(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z) < 1.25 && o.atkCd <= 0) {
+      if (ai.pBreak && ai.pNext >= 0 && (cols[ai.pNext].length || TERRAIN_HP[obst[ai.pNext]]) && Math.hypot(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z) < 1.25 && o.atkCd <= 0) {
         o.yaw = Math.atan2(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z);
-        o.atkCd = ONI_ATTACK_CD; o.swing = 0.3; attackCell(o, ai.pNext);
+        o.atkCd = ONI_ATTACK_CD; startAnim(o); attackCell(o, ai.pNext);
       }
     }
   }
@@ -1780,6 +1882,15 @@ function update(dt) {
     if (G.phase !== 'night') continue; // 昼は待機ルーム
     if (!o.entered) { o.enterT -= dt; if (o.enterT <= 0) oniEnters(o); else continue; }
     o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt);
+    if (o.anim && o.anim.t < o.anim.dur) {
+      o.anim.t += dt;
+      const a = o.anim, p = a.t / a.dur;
+      if (!a.fx && p > (a.type === 'smash' ? 0.6 : a.type === 'stomp' ? 0.7 : 0.4)) { // 当たる瞬間のエフェクト
+        a.fx = true;
+        if (a.type === 'stomp' || a.type === 'smash') { slashFx(o, 'ring'); burst(o.x + Math.sin(o.yaw), o.y + 0.1, o.z + Math.cos(o.yaw), 0xc9b48a, 12); }
+        if (a.type !== 'stomp' && a.type !== 'recoil') slashFx(o, 'slash');
+      }
+    }
     if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, z: 0 } : playerMove(); else { o.ai.pathT -= dt; o.ai.qT -= dt; oniAI(o, dt); }
     const sp = ONI[o.type].speed * ONI_SPEED_MUL * (o.speedMul || 1);
     const m = Math.hypot(o.mv.x, o.mv.z);
@@ -1880,6 +1991,8 @@ function update(dt) {
     if (b.crumble >= 0) { b.crumble -= dt; if (b.crumble <= 0) { removeBlock(b); settleBlocks(); } }
   }
   for (const bo of G.bolts) bo.t += dt;
+  for (const sl of G.slashes) sl.t += dt;
+  G.slashes = G.slashes.filter((sl) => sl.t < sl.life);
   // 支えを失って落ちていくブロック
   for (const f of G.falling) {
     f.t += dt; f.vy += GRAVITY * dt; f.mesh.position.y -= f.vy * dt; f.mesh.rotation.z += dt * 2;
@@ -1946,7 +2059,9 @@ function syncVisuals(time) {
     m.g.visible = !h.captor && !(G.player.kind === 'oni' && (G.phase !== 'night' || roomAt(Math.floor(h.x)) !== G.player.room));
     m.g.position.set(h.x, h.y, h.z); m.g.rotation.y = h.yaw;
     m.ice.visible = h.state === 'frozen';
-    m.stick.visible = h.swing > 0; m.stick.rotation.y = h.swing > 0 ? (h.swing / 0.3 - 0.5) * 2.4 : 0;
+    m.stick.visible = h.swing > 0;
+    if (h.swingType) m.stick.rotation.set(h.swing > 0 ? -1.6 + (1 - h.swing / 0.3) * 2.2 : 0, 0, 0); // 縦振り
+    else m.stick.rotation.set(0, h.swing > 0 ? (h.swing / 0.3 - 0.5) * 2.4 : 0, 0);                   // 横振り
     const bob = h.state === 'ok' && h.onGround && Math.hypot(h.mv.x, h.mv.z) > 0.1 ? Math.abs(Math.sin(time / 90)) * 0.06 : 0;
     m.g.position.y += bob;
   }
@@ -1956,7 +2071,7 @@ function syncVisuals(time) {
     // 人には、自分と同じ部屋にいる鬼だけが見える(どの部屋を選んだかは知らされない)
     m.g.visible = G.phase === 'night' && o.entered && (G.player.kind === 'oni' || sameRoom(o, focusOf()));
     m.g.position.set(o.x, o.y, o.z); m.g.rotation.y = o.yaw;
-    m.parts.rotation.x = o.swing > 0 ? Math.sin((o.swing / 0.3) * Math.PI) * 0.35 : 0;
+    applyAnim(o, m);
     const legs = m.g.userData.legs, sw = Math.sin(o.walkT * 3) * 0.5;
     if (legs) legs.forEach((l, k) => (l.rotation.x = (k % 2 ? sw : -sw) * (k > 1 ? -1 : 1)));
     m.stars.visible = o.stun > 0; m.stars.rotation.y = time / 200;
@@ -1993,6 +2108,21 @@ function syncVisuals(time) {
     b.mesh.position.set(cX(b.i) + ox, (b.type === 'roof' ? b.lv + 0.9 : b.lv + b.h / 2) + b.pop * 2, cZ(b.i) + oz);
     b.mesh.visible = !(G.player.kind === 'oni' && roomAt(b.i % N) !== G.player.room); // 鬼には他の部屋の建物は見えない
   }
+  // 斬撃(白い弧)と衝撃波(広がる輪)
+  if (!G3.slashPool) {
+    G3.slashPool = []; G3.slashGeo = new THREE.RingGeometry(0.75, 1.0, 20, 1, -Math.PI / 2.4, Math.PI / 1.2); G3.ringGeo = new THREE.RingGeometry(0.85, 1.0, 32);
+  }
+  G.slashes.forEach((sl, k) => {
+    let m = G3.slashPool[k];
+    if (!m) { m = new THREE.Mesh(G3.slashGeo, basic(0xffffff, { transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false, blending: THREE.AdditiveBlending })); world.add(m); G3.slashPool[k] = m; }
+    if (m.parent !== world) world.add(m);
+    const p = sl.t / sl.life;
+    m.visible = true; m.material.opacity = 1 - p;
+    m.position.set(sl.x, sl.y, sl.z); m.rotation.set(0, 0, 0);
+    if (sl.kind === 'ring') { m.geometry = G3.ringGeo; m.rotation.x = -Math.PI / 2; m.scale.setScalar(0.5 + p * 3.5); m.material.color.set(0xffe6a0); }
+    else { m.geometry = G3.slashGeo; m.rotation.set(sl.flip ? 0.6 : -0.6, sl.yaw + Math.PI / 2, 0); m.scale.setScalar(1 + p * 0.4); m.material.color.set(0xffffff); }
+  });
+  for (let k = G.slashes.length; k < G3.slashPool.length; k++) G3.slashPool[k].visible = false;
   // 凍結ビームの光線
   if (!G3.boltPool) G3.boltPool = [];
   G.bolts = G.bolts.filter((bo) => bo.t < 0.14);
@@ -2106,6 +2236,10 @@ function project(x, y, z) {
   return { x: (_v.x + 1) / 2 * innerWidth, y: (1 - _v.y) / 2 * innerHeight };
 }
 function updateLabels() {
+  const lockEl = $('lock'), pl = G.player;
+  const lk = pl.kind === 'oni' && ONI[pl.type].fly && G.phase === 'night' && pl.entered && pl.stun <= 0 ? lockTarget(pl) : null;
+  const lp = lk ? project(lk.x, lk.y + 0.9, lk.z) : null;
+  if (lp) { lockEl.style.display = 'block'; lockEl.style.left = lp.x + 'px'; lockEl.style.top = lp.y + 'px'; } else lockEl.style.display = 'none';
   const focus = G.player.state === 'out' && G.spectate ? G.spectate : G.player;
   for (const h of G.humans) {
     if (h.state !== 'frozen' || hdist(h, focus) > (G.phase === 'night' ? 16 : 40)) { h.label.style.display = 'none'; continue; }
@@ -2215,7 +2349,7 @@ function updateHUD() {
     html = `<div class="row">${ONI[p.type].name}</div>
       <div class="row">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ' ' + ROOMS[p.room].name : '-'}${!p.entered ? ' <span style="color:#ffd34d">扉を開けている…</span>' : ''}</div>
       <div class="row" style="font-size:11px;color:#ffd34d">強化: ${p.boost ? BOOSTS[p.boost].name : '-'}</div>` +
-      (ONI[p.type].fly ? `<div class="row" style="font-size:11px;color:#9dff8a">高さ ${p.y.toFixed(1)}　凍結ビーム 連射OK${p.stun > 0 ? '　<span style="color:#ff8a8a">操作不能!</span>' : ''}</div>` : '');
+      (ONI[p.type].fly ? `<div class="row" style="font-size:11px;color:#9dff8a">高さ ${p.y.toFixed(1)}　凍結ビーム 連射・自動ロックオン${p.stun > 0 ? '　<span style="color:#ff8a8a">操作不能!</span>' : ''}</div>` : '');
   }
   const s = $('status'); if (s._h !== html) { s.innerHTML = html; s._h = html; }
 }
@@ -2255,7 +2389,7 @@ function renderWait() {
       <div class="wcol"><h3>1. 鬼の種類</h3>
         <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐺 肉食動物<span>足が速い。ジャンプは低い。高い場所の人にはタッチできない</span></button>
         <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 モンスター<span>遅いが壁・足場を1〜2回で壊す。高さ1まで届く</span></button>
-        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ。斜め下へ凍結ビームを連射。建物も当て続ければ壊せる</span></button>
+        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ。斜め下へ凍結ビームを連射(自動ロックオン)。建物も地形も壊せる</span></button>
       </div>
       <div class="wcol"><h3>2. ${split ? `部屋をえらぶ（定員${ONI_ROOM_CAP}匹）` : '部屋に投票'}</h3>
         ${ROOMS.map((r) => { const full = split && oniPop(r.k, p) >= ONI_ROOM_CAP;
