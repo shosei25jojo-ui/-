@@ -237,15 +237,18 @@ const GRAVITY = 22;
 const HUMAN_SPEED = 4.2, HUMAN_JUMP = 1.3;  // ジャンプの高さ1.3 → 1段だけ登れる
 const HUMAN_R = 0.3, HUMAN_H = 1.6;
 const ONI = {
-  carnivore: { name: '🐺 肉食動物', speed: 5.0, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
-  monster:   { name: '👹 モンスター', speed: 3.3, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
+  carnivore: { name: '🐯 虎(肉食動物)', speed: 5.0, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
+  monster:   { name: '👹 赤鬼(モンスター)', speed: 3.3, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
   alien:     { name: '🛸 宇宙人',     speed: 2.8, jump: 0,    r: 1.0,  h: 0.9, dmg: 0, fly: true },
 };
 const ONI_SPEED_MUL = 1.5;           // 鬼全体の移動速度の倍率(全員まとめて速くする)
 const HIGH_Y = 0.5;                  // この高さ以上が「高い場所」(高鬼のセーフ)
 const MONSTER_REACH = 1.05;          // モンスターがタッチできる高さ
 const THAW_TIME = 2, HIT_STUN = 2, HIT_COST = 35, STAMINA_MAX = 100, STAMINA_REGEN = 12, HIT_RANGE = 1.5;
-const ONI_ATTACK_RANGE = 1.3, ONI_ATTACK_CD = 0.6;
+const ONI_ATTACK_RANGE = 1.3;
+const ONI_ATTACK_COOLDOWN = 1.5;     // 攻撃のあと次の攻撃ができるまでの秒数(赤鬼はこの1.5倍)
+const DUST_MAX = 20;                 // 同時に出せる土煙の数(スマホで重くならないように)
+const atkCooldown = (o) => ONI_ATTACK_COOLDOWN * (o.type === 'monster' ? 1.5 : 1);
 // ---- 宇宙人(UFO) ----
 const BEAM_RATE = 0.15;              // 凍結ビームの連射間隔(秒)。押している間ずっと撃つ
 const BEAM_RANGE = 16;               // ビームの届く距離
@@ -575,6 +578,25 @@ function init3D() {
     c.fillStyle = '#8e3122'; c.fillRect(0, 0, s, s);
     for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) { c.fillStyle = (r + k) % 2 ? '#c4553d' : '#b44a33'; c.fillRect(k * 16 + (r % 2 ? 8 : 0), r * 16 + 2, 14, 12); }
   }) });
+  // 虎の毛皮(円柱のUV: u=周方向で0が腹側、v=長さ方向)。黒い縞と白い腹
+  MAT.tigerFur = new THREE.MeshPhongMaterial({ flatShading: true, shininess: 6, map: makeCanvasTex(128, (c, s) => {
+    c.fillStyle = '#f0a020'; c.fillRect(0, 0, s, s);
+    c.fillStyle = '#f3efe6'; c.fillRect(0, 0, s * 0.16, s); c.fillRect(s * 0.84, 0, s * 0.16, s);
+    c.fillStyle = '#1b1612';
+    for (let k = 0; k < 8; k++) {
+      const v = (k + 0.5) / 8 * s, w = 3 + (k % 3);
+      c.beginPath(); c.moveTo(s * 0.2, v - w * 0.4); c.lineTo(s * 0.5, v - w + (k % 2 ? 2 : -2)); c.lineTo(s * 0.8, v - w * 0.4);
+      c.lineTo(s * 0.8, v + w * 0.4); c.lineTo(s * 0.5, v + w); c.lineTo(s * 0.2, v + w * 0.4); c.fill();
+    }
+  }) });
+  // 赤鬼の虎柄の腰巻き
+  MAT.tigerCloth = new THREE.MeshPhongMaterial({ flatShading: true, shininess: 6, map: makeCanvasTex(128, (c, s) => {
+    c.fillStyle = '#f5c518'; c.fillRect(0, 0, s, s); c.fillStyle = '#1b1612';
+    for (let k = 0; k < 10; k++) { const x = k * s / 10; c.beginPath(); c.moveTo(x, 0); c.lineTo(x + 9, s * 0.45); c.lineTo(x + 3, s); c.lineTo(x - 2, s); c.lineTo(x + 4, s * 0.45); c.lineTo(x - 4, 0); c.fill(); }
+  }) });
+  MAT.dust = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.92, depthWrite: false }); // 多面体なので面ごとに陰がつく
+  GEO.dode = new THREE.DodecahedronGeometry(1, 0); GEO.ico = new THREE.IcosahedronGeometry(1, 0); GEO.cone5 = new THREE.ConeGeometry(1, 1, 5);
+  GEO.disc = new THREE.CylinderGeometry(1, 1, 1, 8);
   MAT.ufo = lam(0xb8c2cc, { emissive: 0x141c26 }); MAT.ufoRim = basic(0x55ffcc, { fog: false });
   MAT.dome = lam(0x88e0ff, { transparent: true, opacity: 0.55, emissive: 0x113344, depthWrite: false });
   MAT.alienSkin = lam(0x7be36b);
@@ -702,6 +724,8 @@ function buildFieldMeshes() {
   POOL.wood = makePool(GEO.wood, MAT.wood, 2500);
   POOL.stone = makePool(GEO.stone, MAT.stone, 2500);
   POOL.part = makePool(GEO.part, MAT.part, 400, true);
+  POOL.dustChip = makePool(GEO.ico, MAT.dust, DUST_MAX * 15, true);   // 土煙の小さな破片
+  POOL.dustCloud = makePool(GEO.ico, MAT.dust, DUST_MAX * 8, true);   // 土煙の大きな塊
   // 建築プレビュー
   G3.preview = new THREE.Mesh(GEO.box1, MAT.preview); G3.preview.visible = false; world.add(G3.preview);
   renderMinimapBase();
@@ -709,8 +733,8 @@ function buildFieldMeshes() {
 const POOL = {}, G3 = {};
 function makePool(geo, mat, cap, colored) {
   const m = new THREE.InstancedMesh(geo, mat, cap);
+  if (colored) for (let i = 0; i < cap; i++) m.setColorAt(i, _c.set(0xffffff)); // 色のバッファは個数ぶん作られるので、個数を0にする前に
   m.count = 0; m.frustumCulled = false;
-  if (colored) for (let i = 0; i < cap; i++) m.setColorAt(i, _c.set(0xffffff));
   world.add(m);
   return m;
 }
@@ -743,43 +767,144 @@ function makeHumanMesh(color, isPlayer) {
   world.add(g);
   return { g, lantern, ice, stick };
 }
-function applyAnim(o, m) {
-  const P = m.parts, arms = m.g.userData.arms;
-  P.position.set(0, 0, 0); P.rotation.set(0, 0, 0);
-  if (arms) arms.forEach((a) => a.rotation.set(0, 0, 0));
-  const a = o.anim;
-  if (!a || a.t >= a.dur || (!arms && ['smash', 'sweep', 'stomp'].includes(a.type))) return;
-  const p = a.t / a.dur, s = Math.sin(p * Math.PI);
-  switch (a.type) {
-    case 'bite':   P.position.z = s * 0.55; P.rotation.x = s * 0.3; break;               // かみつき: 前に突進
-    case 'swipe':  P.rotation.y = Math.sin(p * TAU) * 0.7; P.rotation.z = s * 0.25; break; // ひっかき: 体をひねる
-    case 'pounce': P.position.y = s * 0.8; P.position.z = s * 0.6; P.rotation.x = (p < 0.5 ? -0.5 : 0.5) * s; break; // とびかかり
-    case 'smash': { // 両腕を振り上げてたたきつける
-      const r = p < 0.55 ? -(p / 0.55) * 2.8 : -2.8 + ((p - 0.55) / 0.45) * 3.6;
-      arms.forEach((ar) => (ar.rotation.x = r)); P.rotation.x = p < 0.55 ? -0.15 * (p / 0.55) : 0.3 * s; break;
-    }
-    case 'sweep': // 腕をなぎはらう
-      P.rotation.y = Math.sin(p * Math.PI * 1.5) * 0.9; arms[1].rotation.z = s * 1.4; arms[1].rotation.x = -s * 1.2; break;
-    case 'stomp': // 跳んで踏みつけ(衝撃波)
-      P.position.y = Math.max(0, Math.sin(Math.min(1, p / 0.7) * Math.PI)) * 0.7; arms.forEach((ar, k) => (ar.rotation.z = (k ? 1 : -1) * s * 0.9)); break;
-    case 'recoil': P.rotation.x = -s * 0.25; P.position.y = s * 0.12; break;           // UFO: 発射の反動
+// ---------------------------------------------------------------------
+// 外部モデル(assets/models.json → GLB)。なければコード製モデルを使う
+// ---------------------------------------------------------------------
+const MODELS = {};                                    // キー('oni','tiger'…) → 読み込んだgltf
+const MODEL_KEY = { monster: 'oni', carnivore: 'tiger', alien: 'ufo' };
+function loadScript(src) { return new Promise((ok, ng) => { const el = document.createElement('script'); el.src = src; el.onload = ok; el.onerror = ng; document.head.appendChild(el); }); }
+function loadExternalModels() {
+  if (location.protocol === 'file:') return; // ファイルを直接開いたときは読めないのでコード製モデル
+  fetch('assets/models.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then(async (map) => {
+    if (!map || !Object.keys(map).length) return;
+    await loadScript('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/SkeletonUtils.js').catch(() => {});
+    const loader = new THREE.GLTFLoader();
+    for (const [key, url] of Object.entries(map)) loader.load(url, (gltf) => { MODELS[key] = gltf; }, undefined, () => console.warn('モデルを読み込めませんでした:', url));
+  }).catch(() => {}); // models.json がない(単体のHTML)ときはコード製モデルのまま
+}
+function makeExternalRig(parts, gltf, height) {
+  const model = THREE.SkeletonUtils ? THREE.SkeletonUtils.clone(gltf.scene) : gltf.scene.clone(true);
+  const box = new THREE.Box3().setFromObject(model), size = box.getSize(new THREE.Vector3());
+  const k = height / (size.y || 1); model.scale.setScalar(k); model.position.y = -box.min.y * k;
+  parts.add(model);
+  const mixer = new THREE.AnimationMixer(model), acts = {};
+  for (const clip of gltf.animations || []) {
+    const n = clip.name.toLowerCase(), key = /attack|hit|swing/.test(n) ? 'attack' : /run|walk|move/.test(n) ? 'run' : /idle|stand/.test(n) ? 'idle' : null;
+    if (key && !acts[key]) acts[key] = mixer.clipAction(clip);
   }
+  if (acts.attack) { acts.attack.setLoop(THREE.LoopOnce); acts.attack.clampWhenFinished = true; }
+  return { mixer, acts };
+}
+
+// ---------------------------------------------------------------------
+// コード製モデル(ローポリ・フラットシェーディング。部位ごとに関節で回る)
+// ---------------------------------------------------------------------
+const flatMats = {};
+const fm = (color) => flatMats[color] || (flatMats[color] = new THREE.MeshPhongMaterial({ color, flatShading: true, shininess: 6 }));
+function limbGeo(r1, r2, len, seg = 6) { const g = new THREE.CylinderGeometry(r1, r2, len, seg); g.translate(0, -len / 2, 0); return g; } // 関節から下へ伸びる
+function jnt(parent, x, y, z) { const j = new THREE.Group(); j.position.set(x, y, z); parent.add(j); return j; }
+function pm(parent, geo, mat, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m); return m; }
+const _up = new THREE.Vector3(0, 1, 0);
+// 赤鬼: 赤い肌・筋肉質・黒い荒い髪・黄色い角・牙・虎柄の腰巻き・トゲ付き金棒・白い爪
+function buildRedOni(P) {
+  const red = fm(0xd9362b), redD = fm(0xb02a20), black = fm(0x1e1a1a), yellow = fm(0xf2c12e), white = fm(0xf4efe2), gray = fm(0x55555c), brown = fm(0x6b4423);
+  const R = {};
+  R.hips = jnt(P, 0, 1.12, 0);
+  pm(R.hips, new THREE.CylinderGeometry(0.5, 0.57, 0.44, 9), MAT.tigerCloth, 0, -0.04, 0);
+  R.torso = jnt(R.hips, 0, 0.14, 0);
+  pm(R.torso, new THREE.CylinderGeometry(0.62, 0.44, 0.95, 7), red, 0, 0.47, 0, 1, 1, 0.74);
+  pm(R.torso, GEO.dode, red, -0.22, 0.72, 0.21, 0.27, 0.2, 0.16); pm(R.torso, GEO.dode, red, 0.22, 0.72, 0.21, 0.27, 0.2, 0.16); // 胸筋
+  pm(R.torso, GEO.dode, redD, 0, 0.32, 0.25, 0.22, 0.27, 0.1);                                                                       // 腹筋
+  R.head = jnt(R.torso, 0, 1.0, 0.05);
+  pm(R.head, GEO.dode, red, 0, 0.26, 0, 0.33, 0.36, 0.31);
+  pm(R.head, GEO.ico, black, 0, 0.45, -0.07, 0.42, 0.3, 0.4); // 荒々しい黒髪
+  for (let k = 0; k < 10; k++) {
+    const a = (k / 10) * TAU, sp = pm(R.head, GEO.cone5, black, Math.cos(a) * 0.3, 0.5 + (k % 3) * 0.04, Math.sin(a) * 0.27 - 0.1, 0.1, 0.26, 0.1);
+    sp.quaternion.setFromUnitVectors(_up, _v.set(Math.cos(a), 0.9, Math.sin(a) - 0.3).normalize());
+  }
+  for (const sx of [-1, 1]) {
+    const horn = pm(R.head, GEO.cone5, yellow, sx * 0.17, 0.74, 0.06, 0.075, 0.38, 0.075); horn.rotation.z = -sx * 0.25; // 角
+    const brow = pm(R.head, GEO.small, black, sx * 0.12, 0.37, 0.29, 0.17, 0.05, 0.05); brow.rotation.z = sx * 0.35;       // 怒り眉
+    pm(R.head, GEO.small, white, sx * 0.12, 0.29, 0.29, 0.1, 0.06, 0.03); pm(R.head, GEO.small, black, sx * 0.11, 0.29, 0.305, 0.04, 0.05, 0.02);
+    pm(R.head, GEO.dode, red, sx * 0.33, 0.27, 0, 0.05, 0.1, 0.08);                                                            // 耳
+    pm(R.head, GEO.cone5, white, sx * 0.09, 0.115, 0.31, 0.03, 0.08, 0.03);                                                     // 下の牙
+    const f = pm(R.head, GEO.cone5, white, sx * 0.05, 0.12, 0.31, 0.025, 0.06, 0.025); f.rotation.x = Math.PI;                 // 上の牙
+  }
+  pm(R.head, GEO.dode, redD, 0, 0.21, 0.33, 0.07, 0.06, 0.06);           // 鼻
+  pm(R.head, GEO.small, fm(0x5a1010), 0, 0.09, 0.29, 0.26, 0.09, 0.04);  // 口
+  R.eye = jnt(R.head, 0, 0.29, 0.31);
+  for (const sx of [-1, 1]) { // 太い腕
+    const sh = jnt(R.torso, sx * 0.7, 0.86, 0); pm(sh, GEO.dode, red, 0, 0, 0, 0.23, 0.2, 0.2);
+    pm(sh, limbGeo(0.17, 0.14, 0.55), red);
+    const el = jnt(sh, 0, -0.55, 0); pm(el, limbGeo(0.15, 0.12, 0.5), red); pm(el, GEO.dode, red, 0, -0.56, 0, 0.15, 0.15, 0.15);
+    R[sx < 0 ? 'shL' : 'shR'] = sh; R[sx < 0 ? 'elL' : 'elR'] = el;
+  }
+  R.club = jnt(R.elR, 0, -0.58, 0.02); R.club.rotation.x = -1.1; // 金棒(右手)
+  pm(R.club, limbGeo(0.045, 0.045, 0.3), brown);
+  pm(R.club, limbGeo(0.1, 0.17, 0.95, 7), black, 0, -0.27, 0);
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 6) * TAU + (k >= 6 ? 0.5 : 0), y = k >= 6 ? -1.02 : -0.62, r = k >= 6 ? 0.17 : 0.14;
+    const sp = pm(R.club, GEO.cone5, gray, Math.cos(a) * r, y, Math.sin(a) * r, 0.04, 0.11, 0.04);
+    sp.quaternion.setFromUnitVectors(_up, _v.set(Math.cos(a), 0, Math.sin(a)));
+  }
+  for (const sx of [-1, 1]) { // 太い脚と白い爪
+    const hp = jnt(R.hips, sx * 0.27, -0.06, 0); pm(hp, limbGeo(0.24, 0.19, 0.55), red);
+    const kn = jnt(hp, 0, -0.55, 0); pm(kn, limbGeo(0.19, 0.15, 0.46), red); pm(kn, GEO.small, red, 0, -0.5, 0.08, 0.26, 0.1, 0.36);
+    for (let c = -1; c <= 1; c++) { const cl = pm(kn, GEO.cone5, white, c * 0.08, -0.52, 0.27, 0.03, 0.08, 0.03); cl.rotation.x = Math.PI / 2; }
+    R[sx < 0 ? 'hipL' : 'hipR'] = hp; R[sx < 0 ? 'knL' : 'knR'] = kn;
+  }
+  return R;
+}
+// 虎: 黄〜オレンジの体に黒い縞、腹と口周りは白、丸い耳、先が黒い長い尾、太い前脚
+function buildTiger(P) {
+  const orange = fm(0xf0a020), white = fm(0xf3efe6), black = fm(0x1b1612), pink = fm(0xd88a8a), amber = fm(0xf5c542);
+  const T = {};
+  T.body = jnt(P, 0, 0.78, 0);
+  T.chest = jnt(T.body, 0, 0, 0.18);
+  const cg = new THREE.CylinderGeometry(0.33, 0.3, 0.74, 8); cg.rotateX(Math.PI / 2); pm(T.chest, cg, MAT.tigerFur, 0, 0.02, 0.12);
+  T.rear = jnt(T.body, 0, 0, -0.18);
+  const rg = new THREE.CylinderGeometry(0.3, 0.26, 0.72, 8); rg.rotateX(Math.PI / 2); pm(T.rear, rg, MAT.tigerFur, 0, 0.02, -0.18);
+  T.head = jnt(T.chest, 0, 0.18, 0.5);
+  pm(T.head, GEO.dode, orange, 0, 0.04, 0.02, 0.25, 0.22, 0.24);
+  pm(T.head, GEO.dode, white, 0, -0.06, 0.2, 0.15, 0.1, 0.13);                                                   // 口周り
+  pm(T.head, GEO.dode, white, -0.16, -0.04, 0.05, 0.1, 0.13, 0.1); pm(T.head, GEO.dode, white, 0.16, -0.04, 0.05, 0.1, 0.13, 0.1); // ほお
+  pm(T.head, GEO.dode, pink, 0, 0.0, 0.33, 0.045, 0.035, 0.03);                                                 // 鼻
+  for (const sx of [-1, 1]) {
+    pm(T.head, GEO.small, amber, sx * 0.09, 0.08, 0.215, 0.07, 0.035, 0.02); pm(T.head, GEO.small, black, sx * 0.09, 0.08, 0.225, 0.025, 0.035, 0.01);
+    const ear = pm(T.head, GEO.disc, orange, sx * 0.14, 0.22, -0.03, 0.075, 0.03, 0.075); ear.rotation.x = Math.PI / 2; // 丸い耳
+    const ei = pm(T.head, GEO.disc, white, sx * 0.14, 0.215, -0.01, 0.045, 0.02, 0.045); ei.rotation.x = Math.PI / 2;
+    const st = pm(T.head, GEO.small, black, sx * 0.07, 0.2, 0.12, 0.025, 0.1, 0.02); st.rotation.z = sx * 0.4;        // 顔の縞
+  }
+  T.jaw = jnt(T.head, 0, -0.1, 0.12); pm(T.jaw, GEO.small, white, 0, -0.03, 0.1, 0.16, 0.06, 0.16);
+  for (const sx of [-1, 1]) { const f = pm(T.jaw, GEO.cone5, white, sx * 0.05, 0.03, 0.17, 0.02, 0.05, 0.02); }
+  T.eye = jnt(T.head, 0, 0.08, 0.24);
+  for (const [nm, par, x, y, z, r] of [['fL', T.chest, -0.19, -0.12, 0.3, 0.13], ['fR', T.chest, 0.19, -0.12, 0.3, 0.13], ['bL', T.rear, -0.18, -0.08, -0.32, 0.13], ['bR', T.rear, 0.18, -0.08, -0.32, 0.13]]) {
+    const up = jnt(par, x, y, z); pm(up, limbGeo(r, r * 0.8, 0.36, 6), orange);
+    pm(up, limbGeo(r * 0.95, r * 0.9, 0.05, 6), black, 0, -0.18, 0);
+    const kn = jnt(up, 0, -0.36, 0); pm(kn, limbGeo(r * 0.8, r * 0.7, 0.3, 6), orange);
+    pm(kn, GEO.dode, orange, 0, -0.32, 0.05, r, 0.05, r * 1.3);
+    for (let c = -1; c <= 1; c++) { const cl = pm(kn, GEO.cone5, white, c * 0.05, -0.33, 0.05 + r * 1.2, 0.015, 0.05, 0.015); cl.rotation.x = Math.PI / 2; }
+    T[nm] = up; T[nm + 'K'] = kn;
+  }
+  T.tail = [];
+  for (let k = 0; k < 6; k++) { // 長い尾(先が黒)
+    const seg = k === 0 ? jnt(T.rear, 0, 0.12, -0.52) : jnt(T.tail[k - 1], 0, 0, -0.2);
+    const gg = limbGeo(0.055 - k * 0.004, 0.05 - k * 0.004, 0.21, 5); gg.rotateX(Math.PI / 2);
+    pm(seg, gg, k === 5 || k % 2 ? black : orange);
+    T.tail.push(seg);
+  }
+  return T;
 }
 function makeOniMesh(type) {
   const g = new THREE.Group(), parts = new THREE.Group(); g.add(parts);
-  if (type === 'carnivore') { // 四足歩行
-    addBox(parts, MAT.carn, 0.56, 0.5, 1.05, 0, 0.62, 0);
-    addBox(parts, MAT.carn, 0.46, 0.44, 0.46, 0, 0.86, 0.62);
-    addBox(parts, MAT.carnLight, 0.26, 0.2, 0.28, 0, 0.76, 0.92);
-    for (const sx of [-1, 1]) { const ear = new THREE.Mesh(GEO.cone, MAT.carnDark); ear.scale.set(0.09, 0.22, 0.09); ear.position.set(sx * 0.14, 1.17, 0.58); parts.add(ear); }
-    const legs = [];
-    for (const [lx, lz] of [[-0.19, 0.36], [0.19, 0.36], [-0.19, -0.36], [0.19, -0.36]]) legs.push(addBox(parts, MAT.carnDark, 0.14, 0.42, 0.14, lx, 0.21, lz));
-    const tail = addBox(parts, MAT.carnDark, 0.1, 0.1, 0.5, 0, 0.8, -0.68); tail.rotation.x = -0.5;
-    addSphere(parts, MAT.eye, 0.065, -0.12, 0.94, 0.86); addSphere(parts, MAT.eye, 0.065, 0.12, 0.94, 0.86);
-    const eyeLight = new THREE.Mesh(GEO.eyeCone, MAT.eyeBeam); eyeLight.position.set(0, 0.94, 0.88); eyeLight.rotation.x = 0.18; parts.add(eyeLight);
-    g.userData.eyePos = [0, 0.94, 0.88]; g.userData.eyeTilt = 0.18;
-    g.userData.legs = legs;
-  } else if (type === 'alien') { // UFOに乗った宇宙人
+  const ext = MODELS[MODEL_KEY[type]];
+  const res = { g, parts, rig: null, mixer: null, acts: null, ext: !!ext };
+  if (ext && type !== 'alien') {
+    const e = makeExternalRig(parts, ext, ONI[type].h); res.mixer = e.mixer; res.acts = e.acts;
+  } else if (type === 'carnivore') res.rig = buildTiger(parts);
+  else if (type === 'monster') res.rig = buildRedOni(parts);
+  else if (type === 'alien') { // UFOに乗った宇宙人
     const saucer = new THREE.Mesh(GEO.sphere, MAT.ufo); saucer.scale.set(1.3, 0.3, 1.3); saucer.position.y = 0.3; parts.add(saucer);
     const rim = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.07, 6, 28), MAT.ufoRim); rim.rotation.x = Math.PI / 2; rim.position.y = 0.3; parts.add(rim);
     addSphere(parts, MAT.alienSkin, 0.27, 0, 0.72, 0);
@@ -789,27 +914,141 @@ function makeOniMesh(type) {
     const searchCone = new THREE.Mesh(GEO.ufoCone, MAT.ufoLight); g.add(searchCone);
     const searchDisc = new THREE.Mesh(GEO.ufoDisc, MAT.ufoSpot); g.add(searchDisc);
     g.userData.searchCone = searchCone; g.userData.searchDisc = searchDisc;
-    const beamMat = MAT.ufoBeam.clone();
-    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.45, BEAM_RADIUS, 1, 18, 1, true), beamMat); beam.visible = false; g.add(beam);
-    g.userData.beam = beam; g.userData.beamMat = beamMat;
-  } else { // 大きな人型
-    const legs = [addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, -0.3, 0.48, 0), addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, 0.3, 0.48, 0)];
-    addBox(parts, MAT.mons, 1.2, 1.15, 0.72, 0, 1.52, 0);
-    addBox(parts, MAT.mons, 0.78, 0.68, 0.68, 0, 2.43, 0.04);
-    const arms = [-1, 1].map((sx) => { // 肩を支点にして振れるように
-      const pv = new THREE.Group(); pv.position.set(sx * 0.79, 2.0, 0.05); parts.add(pv);
-      addBox(pv, MAT.mons, 0.34, 1.15, 0.38, 0, -0.58, 0); return pv;
-    });
-    for (const sx of [-1, 1]) { const h = new THREE.Mesh(GEO.cone, MAT.horn); h.scale.set(0.12, 0.42, 0.12); h.position.set(sx * 0.27, 2.95, 0.02); h.rotation.z = -sx * 0.3; parts.add(h); }
-    addBox(parts, MAT.dark, 0.5, 0.1, 0.05, 0, 2.24, 0.39);
-    addSphere(parts, MAT.eye, 0.085, -0.18, 2.52, 0.38); addSphere(parts, MAT.eye, 0.085, 0.18, 2.52, 0.38);
-    const eyeLight = new THREE.Mesh(GEO.eyeCone, MAT.eyeBeam); eyeLight.position.set(0, 2.52, 0.4); eyeLight.rotation.x = 0.38; parts.add(eyeLight);
-    g.userData.eyePos = [0, 2.52, 0.4]; g.userData.eyeTilt = 0.38;
-    g.userData.legs = legs; g.userData.arms = arms;
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.45, BEAM_RADIUS, 1, 18, 1, true), MAT.ufoBeam.clone()); beam.visible = false; g.add(beam);
+    g.userData.beam = beam;
   }
-  const stars = makeStars(ONI[type].h + 0.35); g.add(stars);
+  if (type !== 'alien') { // 目から前方へライト
+    const eyeLight = new THREE.Mesh(GEO.eyeCone, MAT.eyeBeam);
+    const tilt = type === 'monster' ? 0.38 : 0.18;
+    if (res.rig) res.rig.eye.add(eyeLight); else { eyeLight.position.set(0, ONI[type].h * 0.85, 0.35); parts.add(eyeLight); }
+    eyeLight.rotation.x = tilt;
+    g.userData.eyePos = type === 'monster' ? [0, 2.55, 0.36] : [0, 1.04, 0.92]; g.userData.eyeTilt = tilt;
+  }
+  res.stars = makeStars(ONI[type].h + 0.35); g.add(res.stars);
   world.add(g);
-  return { g, parts, stars };
+  return res;
+}
+// 外部モデルが後から読み込まれたら作り直す
+function refreshOniMesh(o) {
+  if (o.mesh.ext || !MODELS[MODEL_KEY[o.type]] || o.type === 'alien') return;
+  world.remove(o.mesh.g); o.mesh = makeOniMesh(o.type);
+}
+
+// ---------------------------------------------------------------------
+// アニメーション: 走る(コード製モデル) + 攻撃モーション + 足音の土煙
+// ---------------------------------------------------------------------
+function animateOni(o, m, dt) {
+  o.runW = (o.runW || 0) + (((o.moveAmt || 0) > 0.05 ? 1 : 0) - (o.runW || 0)) * Math.min(1, dt * 8);
+  const P = m.parts, a = o.anim && o.anim.t < o.anim.dur ? o.anim : null;
+  if (m.mixer) { // 外部モデル: idle / run / attack
+    const want = a && m.acts.attack ? 'attack' : o.runW > 0.5 && m.acts.run ? 'run' : 'idle';
+    if (m.cur !== want && m.acts[want]) { const nx = m.acts[want]; nx.reset().fadeIn(0.15).play(); if (m.cur && m.acts[m.cur]) m.acts[m.cur].fadeOut(0.15); m.cur = want; }
+    m.mixer.update(dt);
+    return;
+  }
+  P.position.set(0, 0, 0); P.rotation.set(0, 0, 0);
+  const R = m.rig;
+  if (!R) { applyAttack(o, m, a); return; } // UFO
+  const w = o.runW, t = performance.now() / 1000;
+  for (const k in R) { const j = R[k]; if (j && j.isObject3D) j.rotation.set(0, 0, 0); }
+  if (R.tail) R.tail.forEach((j) => j.rotation.set(0, 0, 0));
+  if (o.type === 'monster') {
+    R.club.rotation.x = -1.1;
+    const ph = o.walkT * 2.6, s = Math.sin(ph), c = Math.cos(ph);
+    R.torso.rotation.x = 0.26 * w + Math.sin(t * 2) * 0.02 * (1 - w); // 上体を15度前に倒す(止まっている時は呼吸)
+    R.head.rotation.x = -0.24 * w;                                   // 頭は前方に固定
+    R.hips.rotation.y = s * 0.14 * w; R.torso.rotation.y = -s * 0.08 * w; // 腰を左右にひねる
+    R.hipL.rotation.x = -s * 0.8 * w; R.hipR.rotation.x = s * 0.8 * w;   // 大股で踏み込む
+    R.knL.rotation.x = Math.max(0, s) * 1.25 * w + 0.05; R.knR.rotation.x = Math.max(0, -s) * 1.25 * w + 0.05; // 膝を深く曲げる
+    R.shL.rotation.x = s * 0.95 * w; R.elL.rotation.x = -0.25 - 0.55 * w;           // 反対の腕は大きく前後に
+    R.shR.rotation.x = (0.5 + c * 0.12) * w; R.elR.rotation.x = -0.15 - 0.2 * w;    // 金棒の腕は後ろに引いたまま小さく
+    P.position.y = Math.abs(s) * 0.1 * w;
+    footDust(o, s, 0.35);
+  } else {
+    const ph = o.walkT * 3.0, s = Math.sin(ph);
+    R.body.position.y = 0.78 + Math.abs(Math.sin(ph)) * 0.08 * w + Math.sin(t * 2.5) * 0.01;
+    R.chest.rotation.x = s * 0.14 * w; R.rear.rotation.x = -s * 0.14 * w;            // 背中を弓のように曲げ伸ばし
+    R.head.rotation.x = -R.chest.rotation.x;                                           // 獲物から目を離さない
+    R.fL.rotation.x = -Math.sin(ph) * 0.95 * w; R.fR.rotation.x = -Math.sin(ph + 0.5) * 0.95 * w; // 前脚を大きく振り出す
+    R.fLK.rotation.x = Math.max(0, Math.cos(ph)) * 1.0 * w; R.fRK.rotation.x = Math.max(0, Math.cos(ph + 0.5)) * 1.0 * w;
+    R.bL.rotation.x = Math.sin(ph) * 0.9 * w; R.bR.rotation.x = Math.sin(ph + 0.5) * 0.9 * w;   // 後脚で強く蹴る
+    R.bLK.rotation.x = -Math.max(0, -Math.cos(ph)) * 0.9 * w; R.bRK.rotation.x = -Math.max(0, -Math.cos(ph + 0.5)) * 0.9 * w;
+    const turn = clamp(-(o.turn || 0) * 0.3, -0.6, 0.6);                              // 曲がる方と反対へ尾を振る
+    R.tail.forEach((j, k) => { j.rotation.y = turn / 2 + Math.sin(ph * 0.5 + k * 0.7) * 0.12 * (0.4 + w) + Math.sin(t * 1.5 + k) * 0.05; j.rotation.x = k === 0 ? -0.5 + 0.2 * w : 0.08; });
+    footDust(o, s, 0.5);
+  }
+  applyAttack(o, m, a);
+}
+// 足が地面に着いた瞬間(歩く周期の符号が変わった時)に土煙
+function footDust(o, s, back) {
+  const sign = s >= 0 ? 1 : -1;
+  if (o.lastStep !== undefined && sign !== o.lastStep && o.runW > 0.5 && o.onGround && o.mesh.g.visible) {
+    const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
+    spawnDust(o.x - fx * back + Math.cos(o.yaw) * 0.25 * sign, o.y, o.z - fz * back - Math.sin(o.yaw) * 0.25 * sign, fx, fz, o.type === 'monster' ? 1.2 : 1);
+  }
+  o.lastStep = sign;
+}
+function applyAttack(o, m, a) {
+  if (!a) return;
+  const P = m.parts, R = m.rig, p = a.t / a.dur, s = Math.sin(p * Math.PI);
+  const slam = p < 0.55 ? -(p / 0.55) * 2.9 : -2.9 + ((p - 0.55) / 0.45) * 3.5; // 振り上げて→振り下ろす
+  switch (a.type) {
+    case 'bite':   P.position.z = s * 0.5; if (R) { R.head.rotation.x -= 0.3 * s; R.jaw.rotation.x = 0.7 * s; } break;            // かみつき
+    case 'swipe':  P.rotation.y = 0.3 * s; if (R) { R.fR.rotation.x = -1.8 * s; R.fR.rotation.z = -0.5 * s; R.chest.rotation.x = -0.25 * s; } break; // 前脚でひっかく
+    case 'pounce': P.position.y = s * 0.8; P.position.z = s * 0.6; if (R) { R.fL.rotation.x = R.fR.rotation.x = -1.2 * s; R.bL.rotation.x = R.bR.rotation.x = 0.9 * s; R.jaw.rotation.x = 0.5 * s; } break;
+    case 'smash':  if (R) { R.shR.rotation.x = slam; R.shL.rotation.x = slam * 0.9; R.elR.rotation.x = R.elL.rotation.x = -0.3; R.torso.rotation.x = p < 0.55 ? -0.25 * (p / 0.55) : 0.5 * s; } break; // 金棒を振り下ろす
+    case 'sweep':  if (R) { R.torso.rotation.y = Math.sin(p * Math.PI * 1.5) * 0.9; R.shR.rotation.x = -1.3 * s; R.shR.rotation.z = 1.2 * s; } break; // なぎはらい
+    case 'jumpsmash': P.position.y = Math.max(0, Math.sin(Math.min(1, p / 0.6) * Math.PI)) * 0.8; if (R) { R.shR.rotation.x = slam; R.shL.rotation.x = slam; R.knL.rotation.x = R.knR.rotation.x = 0.6 * s; } break; // 跳んで振り下ろす
+    case 'recoil': P.rotation.x = -s * 0.25; P.position.y = s * 0.12; break;               // UFO: 発射の反動
+  }
+}
+
+// ---------------------------------------------------------------------
+// 土煙: 1.発生(0.1秒 小さな破片が飛び散る) → 2.拡散(0.4秒 大きな塊がふくらみ後ろへ流れる) → 3.消失(0.5秒 小さく薄くなって消える)
+// ---------------------------------------------------------------------
+const DUST_COLORS = [0xd8c7a6, 0xf2efe9, 0xa88a64, 0xc9b490, 0xe6dcc6];
+function spawnDust(x, y, z, fx, fz, size = 1) {
+  if (!G || G.dusts.length >= DUST_MAX) return;
+  const d = { t: 0, chips: [], clouds: [] };
+  for (let k = 0, n = randInt(10, 15); k < n; k++) {
+    const a = rand(0, TAU), sp = rand(1.2, 3.2);
+    d.chips.push({ x, y: y + 0.05, z, vx: Math.cos(a) * sp - fx * 0.8, vy: rand(1.5, 3.8), vz: Math.sin(a) * sp - fz * 0.8, s: rand(0.035, 0.08) * size, c: DUST_COLORS[randInt(0, 4)], rot: rand(0, TAU) });
+  }
+  for (let k = 0, n = randInt(5, 8); k < n; k++) {
+    d.clouds.push({ x: x + rand(-0.2, 0.2), y: y + rand(0.12, 0.35), z: z + rand(-0.2, 0.2), vx: -fx * rand(0.8, 1.6) + rand(-0.3, 0.3), vy: rand(0.15, 0.5), vz: -fz * rand(0.8, 1.6) + rand(-0.3, 0.3),
+                    s: rand(0.16, 0.3) * size, c: DUST_COLORS[randInt(0, 4)], delay: rand(0.04, 0.12), rot: rand(0, TAU) });
+  }
+  G.dusts.push(d);
+}
+function updateDust(dt) {
+  for (const d of G.dusts) {
+    d.t += dt;
+    for (const c of d.chips) { c.vy -= GRAVITY * 0.6 * dt; c.x += c.vx * dt; c.y = Math.max(0.02, c.y + c.vy * dt); c.z += c.vz * dt; c.vx *= 0.96; c.vz *= 0.96; c.rot += dt * 6; }
+    for (const c of d.clouds) if (d.t > c.delay) { c.x += c.vx * dt; c.y += c.vy * dt; c.z += c.vz * dt; c.vx *= 0.97; c.vz *= 0.97; c.rot += dt; }
+  }
+  G.dusts = G.dusts.filter((d) => d.t < 1.0);
+}
+function drawDust() {
+  let kc = 0, kk = 0;
+  for (const d of G.dusts) {
+    const t = d.t, fade = t < 0.5 ? 1 : Math.max(0, 1 - (t - 0.5) / 0.5);
+    for (const c of d.chips) {
+      const sc = c.s * (t < 0.1 ? t / 0.1 : 1) * fade;
+      _m.compose(_v.set(c.x, c.y, c.z), _q.setFromEuler(_e.set(c.rot, c.rot * 0.7, 0)), _s.set(sc, sc, sc));
+      POOL.dustChip.setMatrixAt(kc, _m); POOL.dustChip.setColorAt(kc, _c.set(c.c)); kc++;
+    }
+    for (const c of d.clouds) {
+      const tc = t - c.delay;
+      const grow = tc <= 0 ? 0 : tc < 0.4 ? 0.5 + (tc / 0.4) * 1.1 : 1.6;     // ふくらむ
+      const sc = c.s * grow * fade;
+      _m.compose(_v.set(c.x, c.y, c.z), _q.setFromEuler(_e.set(0, c.rot, c.rot * 0.5)), _s.set(sc, sc * 0.85, sc));
+      POOL.dustCloud.setMatrixAt(kk, _m); POOL.dustCloud.setColorAt(kk, _c.set(c.c)); kk++;
+    }
+  }
+  POOL.dustChip.count = kc; POOL.dustCloud.count = kk;
+  POOL.dustChip.instanceMatrix.needsUpdate = POOL.dustCloud.instanceMatrix.needsUpdate = true;
+  if (POOL.dustChip.instanceColor) POOL.dustChip.instanceColor.needsUpdate = true;
+  if (POOL.dustCloud.instanceColor) POOL.dustCloud.instanceColor.needsUpdate = true;
 }
 
 // =====================================================================
@@ -861,7 +1100,7 @@ function startGame() {
   $('labels').innerHTML = '';
   G = { phase: 'select', round: 1, timeLeft: 0, selectT: 0, dayElapsed: 0, nextEvent: EVENT_INTERVAL, nightT: 0,
         humans: [], onis: [], boxes: [], items: [], fruits: [], blocks: [], parts: [], fx: [], chest: null, rain: null,
-        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null, bolts: [], slashes: [],
+        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null, bolts: [], slashes: [], dusts: [],
         stats: { freezes: 0, thaws: 0, hits: 0, built: 0, rescues: 0 }, cam: new THREE.Vector3() };
   for (let i = 0; i < HUMAN_COUNT; i++) G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, ROOMS[0].home.x + 0.5, ROOMS[0].home.z + 0.5));
   const cpuTypes = shuffle(ONI_TYPES.filter((t) => playerSide !== 'oni' || t !== playerOniType));
@@ -955,7 +1194,7 @@ function setOniType(o, type) {
   if (o.type === type) return;
   world.remove(o.mesh.g);
   const d = ONI[type];
-  o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false; o.captives = []; o.anim = null;
+  o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false; o.captives = []; o.anim = null; o.pendingBreak = null;
 }
 // ある地点の近く(同じ部屋)の空いているマスをランダムに選ぶ
 function spotsNear(e, n) {
@@ -980,6 +1219,7 @@ function startNight() {
     o.dmgMul = o.boost === 'power' ? BOOST_POWER : 1;
     o.thawMul = o.boost === 'freeze' ? BOOST_THAW : 1;
   }
+  G.onis.forEach(refreshOniMesh);
   if (splitMode()) for (const o of G.onis) o.room = o.vote;
   else { const k = decideRoom(); for (const o of G.onis) o.room = k; }
   G.oniRooms = [...new Set(G.onis.map((o) => o.room))];
@@ -1188,10 +1428,10 @@ function damageBlock(b, dmg) {
   if (b.hp <= 0) { addFx(cX(b.i), b.y1 + 0.4, cZ(b.i), 'バキッ!', '#fff'); removeBlock(b); settleBlocks(); }
 }
 // 攻撃モーション: 種類ごとに数パターンからランダムに選ぶ
-const ANIMS = { carnivore: ['bite', 'swipe', 'pounce'], monster: ['smash', 'sweep', 'stomp'], alien: ['recoil'] };
+const ANIMS = { carnivore: ['bite', 'swipe', 'pounce'], monster: ['smash', 'sweep', 'jumpsmash'], alien: ['recoil'] };
 function startAnim(o) {
   const list = ANIMS[o.type], type = list[randInt(0, list.length - 1)];
-  const dur = { bite: 0.32, swipe: 0.34, pounce: 0.45, smash: 0.5, sweep: 0.45, stomp: 0.5, recoil: 0.14 }[type];
+  const dur = { bite: 0.32, swipe: 0.34, pounce: 0.45, smash: 0.55, sweep: 0.45, jumpsmash: 0.65, recoil: 0.14 }[type];
   if (o.anim && o.anim.t < o.anim.dur && type === 'recoil') return;
   o.anim = { type, t: 0, dur, fx: false };
   o.swing = 0.3;
@@ -1233,14 +1473,41 @@ function clearMini(i) {
   c.fillStyle = r && r.terrain === 'factory' ? '#77787c' : '#4f8a45';
   c.fillRect((i % N) * 4, ((i / N) | 0) * 4, 4, 4);
 }
-// 鬼の攻撃: 地形ならそれを、ブロックならその列で鬼の体の高さにあるブロック(根元)を狙う → 上がまとめて崩れる
+// 鬼の攻撃: プレイヤーのブロックも最初からある地形も1回で壊す
+//   虎: 正面の1ブロック / 赤鬼: 金棒で正面3×3×高さ2をまとめて / UFO: 壊せない
+function breakFront(o, i) {
+  if (ONI[o.type].fly || G.phase !== 'night') return 0;
+  let n = 0, fxAt = null;
+  if (o.type === 'monster') {
+    const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
+    let dx = 0, dz = 0; if (Math.abs(fx) >= Math.abs(fz)) dx = Math.sign(fx); else dz = Math.sign(fz);
+    const cx = Math.floor(o.x), cz = Math.floor(o.z), lv = Math.floor(o.y + 0.01);
+    for (let d = 1; d <= 3; d++) for (let l = -1; l <= 1; l++) {
+      const x = cx + dx * d - dz * l, z = cz + dz * d + dx * l;
+      if (!inField(x, z)) continue;
+      const j = idx(x, z);
+      if (TERRAIN_HP[obst[j]]) { damageTerrain(j, Infinity); n++; continue; }
+      for (const b of cols[j].slice()) if (b.y1 > lv + 0.01 && b.y0 < lv + 2 - 0.01) { removeBlock(b); n++; }
+    }
+    fxAt = { x: cx + 0.5 + dx * 2, z: cz + 0.5 + dz * 2 };
+    spawnDust(fxAt.x, o.y, fxAt.z, -dx, -dz, 1.6); // 金棒をたたきつけた土煙
+  } else {
+    if (i < 0) return 0;
+    if (TERRAIN_HP[obst[i]]) { damageTerrain(i, Infinity); n = 1; }
+    else {
+      const sorted = cols[i].slice().sort((a, b) => a.y0 - b.y0);
+      const b = sorted.find((x) => x.y1 > o.y + 0.05 && x.y0 < o.y + o.hgt) || sorted[0];
+      if (b) { removeBlock(b); n = 1; }
+    }
+    fxAt = { x: cX(i), z: cZ(i) };
+  }
+  if (n) { settleBlocks(); addFx(fxAt.x, o.y + 2, fxAt.z, o.type === 'monster' ? `ドゴォン!${n > 1 ? ` ×${n}` : ''}` : 'バキッ!', '#ffd34d'); }
+  return n;
+}
+// 攻撃の当たる瞬間(モーションに合わせて)に壊す
 function attackCell(o, i) {
-  if (i < 0) return false;
-  if (TERRAIN_HP[obst[i]]) return damageTerrain(i, ONI[o.type].dmg * (o.dmgMul || 1));
-  const col = cols[i]; if (!col || !col.length || ONI[o.type].fly) return false;
-  const sorted = col.slice().sort((a, b) => a.y0 - b.y0);
-  const b = sorted.find((x) => x.y1 > o.y + 0.05 && x.y0 < o.y + o.hgt) || sorted[0];
-  damageBlock(b, ONI[o.type].dmg * (o.dmgMul || 1));
+  if (ONI[o.type].fly) return false;
+  o.pendingBreak = i;
   return true;
 }
 function costText(type) { const p = PARTS[type], a = []; if (p.wood) a.push(`木${p.wood}`); if (p.stone) a.push(`石${p.stone}`); return a.join('+'); }
@@ -1361,8 +1628,7 @@ function fireBolt(o) {
   G.bolts.push({ x: ox, y: oy, z: oz, d, len: Math.max(0.3, t), t: 0 });
   const ex = ox + d.x * t, ey = oy + d.y * t, ez = oz + d.z * t;
   if (hitH) freezeByBeam(o, hitH);
-  else if (hitB) { burst(ex, ey, ez, 0x9ff3ff, 2); damageBlock(hitB, BEAM_RATE * BEAM_DPS + 1e-6); }
-  else if (hitT >= 0) { burst(ex, ey, ez, 0x9ff3ff, 2); damageTerrain(hitT, BEAM_RATE * BEAM_DPS + 1e-6); }
+  else if (hitB || hitT >= 0) burst(ex, ey, ez, 0x9ff3ff, 2); // UFOは建物を壊せない(ビームは止まるだけ)
   else burst(ex, Math.max(0.05, ey), ez, 0x9ff3ff, 1);
   startAnim(o);
 }
@@ -1400,7 +1666,7 @@ function eliminate(h, text) {
 function doOniAttack(o) {
   if (ONI[o.type].fly) { if (o.fireT <= 0) { fireBolt(o); o.fireT = BEAM_RATE; } return; }
   if (o.atkCd > 0 || o.stun > 0) return;
-  o.atkCd = ONI_ATTACK_CD; startAnim(o);
+  o.atkCd = atkCooldown(o); startAnim(o);
   const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
   if (G.phase === 'night') {
     for (const h of G.humans) {
@@ -1412,10 +1678,8 @@ function doOniAttack(o) {
       if (tryFreeze(o, h)) return;
     }
   }
-  const i = frontCell(o);
-  if (i < 0 || (!cols[i].length && !TERRAIN_HP[obst[i]])) return;
-  if (G.phase !== 'night') { if (o.isPlayer) toast('昼のあいだは建物を壊せない'); return; }
-  attackCell(o, i);
+  if (G.phase !== 'night') return;
+  attackCell(o, frontCell(o));
 }
 
 // =====================================================================
@@ -1801,7 +2065,7 @@ function oniAI(o, dt) {
       const d = hdist(o, target);
       if (target.y >= HIGH_Y && d < 1.9) { // 足場の上の人: 足場を壊す(モンスターは1〜2回、肉食動物は少しずつ)
         o.yaw = Math.atan2(target.x - o.x, target.z - o.z);
-        if (o.atkCd <= 0) { o.atkCd = ONI_ATTACK_CD; startAnim(o); attackCell(o, cellOf(target)); }
+        if (o.atkCd <= 0) { o.atkCd = atkCooldown(o); startAnim(o); attackCell(o, cellOf(target)); }
       } else if (waiting && d < 2.6 && o.type === 'carnivore') { // 肉食動物は下で待ち伏せ(モンスターは近づいて壊す)
         o.yaw = Math.atan2(target.x - o.x, target.z - o.z);
       } else {
@@ -1811,7 +2075,7 @@ function oniAI(o, dt) {
       // 経路上のブロックを壊して進む
       if (ai.pBreak && ai.pNext >= 0 && (cols[ai.pNext].length || TERRAIN_HP[obst[ai.pNext]]) && Math.hypot(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z) < 1.25 && o.atkCd <= 0) {
         o.yaw = Math.atan2(cX(ai.pNext) - o.x, cZ(ai.pNext) - o.z);
-        o.atkCd = ONI_ATTACK_CD; startAnim(o); attackCell(o, ai.pNext);
+        o.atkCd = atkCooldown(o); startAnim(o); attackCell(o, ai.pNext);
       }
     }
   }
@@ -1885,11 +2149,16 @@ function update(dt) {
     if (o.anim && o.anim.t < o.anim.dur) {
       o.anim.t += dt;
       const a = o.anim, p = a.t / a.dur;
-      if (!a.fx && p > (a.type === 'smash' ? 0.6 : a.type === 'stomp' ? 0.7 : 0.4)) { // 当たる瞬間のエフェクト
+      if (!a.fx && p > (a.type === 'smash' ? 0.6 : a.type === 'jumpsmash' ? 0.65 : 0.4)) { // 当たる瞬間
         a.fx = true;
-        if (a.type === 'stomp' || a.type === 'smash') { slashFx(o, 'ring'); burst(o.x + Math.sin(o.yaw), o.y + 0.1, o.z + Math.cos(o.yaw), 0xc9b48a, 12); }
-        if (a.type !== 'stomp' && a.type !== 'recoil') slashFx(o, 'slash');
+        if (a.type === 'jumpsmash' || a.type === 'smash') slashFx(o, 'ring');
+        if (a.type !== 'recoil') slashFx(o, 'slash');
+        if (o.pendingBreak !== null && o.pendingBreak !== undefined) { breakFront(o, o.pendingBreak); o.pendingBreak = null; }
       }
+    } else if (o.pendingBreak !== null && o.pendingBreak !== undefined) { breakFront(o, o.pendingBreak); o.pendingBreak = null; }
+    { // 向きの変化(虎の尾の振り用)
+      let dy = o.yaw - (o.prevYaw ?? o.yaw); dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      o.turn = (o.turn || 0) * 0.8 + (dy / Math.max(dt, 1e-3)) * 0.2; o.prevYaw = o.yaw;
     }
     if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, z: 0 } : playerMove(); else { o.ai.pathT -= dt; o.ai.qT -= dt; oniAI(o, dt); }
     const sp = ONI[o.type].speed * ONI_SPEED_MUL * (o.speedMul || 1);
@@ -1906,7 +2175,8 @@ function update(dt) {
       }
       continue;
     }
-    if (o.stun <= 0 && m > 0.05) { o.yaw = Math.atan2(o.mv.x, o.mv.z); moveBody(o, o.mv.x * sp * dt, o.mv.z * sp * dt); o.walkT += dt * sp * m; }
+    o.moveAmt = o.stun <= 0 && m > 0.05 ? m : 0;
+    if (o.stun <= 0 && m > 0.05) { const px = o.x, pz = o.z; o.yaw = Math.atan2(o.mv.x, o.mv.z); moveBody(o, o.mv.x * sp * dt, o.mv.z * sp * dt); o.walkT += Math.hypot(o.x - px, o.z - pz); if (Math.hypot(o.x - px, o.z - pz) < 1e-3) o.moveAmt = 0; }
     else o.blocked = -Infinity;
     if (!o.isPlayer && o.stun <= 0) { autoJump(o); checkStuck(o, dt); }
     physics(o, dt);
@@ -1991,6 +2261,7 @@ function update(dt) {
     if (b.crumble >= 0) { b.crumble -= dt; if (b.crumble <= 0) { removeBlock(b); settleBlocks(); } }
   }
   for (const bo of G.bolts) bo.t += dt;
+  updateDust(dt);
   for (const sl of G.slashes) sl.t += dt;
   G.slashes = G.slashes.filter((sl) => sl.t < sl.life);
   // 支えを失って落ちていくブロック
@@ -2051,6 +2322,8 @@ function applyLighting() {
 // 見た目の同期・描画
 // =====================================================================
 function syncVisuals(time) {
+  const fdt = Math.min(0.05, Math.max(0, (time - (G._syncT || time)) / 1000)); G._syncT = time;
+  drawDust();
   // 人
   for (const h of G.humans) {
     const m = h.mesh;
@@ -2071,12 +2344,10 @@ function syncVisuals(time) {
     // 人には、自分と同じ部屋にいる鬼だけが見える(どの部屋を選んだかは知らされない)
     m.g.visible = G.phase === 'night' && o.entered && (G.player.kind === 'oni' || sameRoom(o, focusOf()));
     m.g.position.set(o.x, o.y, o.z); m.g.rotation.y = o.yaw;
-    applyAnim(o, m);
-    const legs = m.g.userData.legs, sw = Math.sin(o.walkT * 3) * 0.5;
-    if (legs) legs.forEach((l, k) => (l.rotation.x = (k % 2 ? sw : -sw) * (k > 1 ? -1 : 1)));
+    animateOni(o, m, fdt);
     m.stars.visible = o.stun > 0; m.stars.rotation.y = time / 200;
     if (ONI[o.type].fly) {
-      m.parts.rotation.x = 0; m.parts.position.y = Math.sin(time / 300) * 0.08; m.parts.rotation.y = time / 900;
+      m.parts.position.y += Math.sin(time / 300) * 0.08; m.parts.rotation.y = time / 900;
       const beam = m.g.userData.beam, len = Math.max(0.5, o.y - groundAt(o.x, o.z, 0.1, o.y));
       beam.visible = false;
       // 常についているサーチライト
@@ -2349,6 +2620,7 @@ function updateHUD() {
     html = `<div class="row">${ONI[p.type].name}</div>
       <div class="row">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ' ' + ROOMS[p.room].name : '-'}${!p.entered ? ' <span style="color:#ffd34d">扉を開けている…</span>' : ''}</div>
       <div class="row" style="font-size:11px;color:#ffd34d">強化: ${p.boost ? BOOSTS[p.boost].name : '-'}</div>` +
+      (!ONI[p.type].fly ? `<div class="row" style="font-size:11px">攻撃 ${p.atkCd > 0 ? `<span style="color:#ff8a8a">${p.atkCd.toFixed(1)}秒</span>` : '<span style="color:#7CFC9A">OK</span>'}　${p.type === 'monster' ? '金棒: 正面3×3×高さ2を破壊' : '正面の1ブロックを破壊'}</div>` : '') +
       (ONI[p.type].fly ? `<div class="row" style="font-size:11px;color:#9dff8a">高さ ${p.y.toFixed(1)}　凍結ビーム 連射・自動ロックオン${p.stun > 0 ? '　<span style="color:#ff8a8a">操作不能!</span>' : ''}</div>` : '');
   }
   const s = $('status'); if (s._h !== html) { s.innerHTML = html; s._h = html; }
@@ -2387,9 +2659,9 @@ function renderWait() {
     <p class="note">人たちは部屋に分かれて資材集め・建築中…（各部屋の人数も建築も鬼からは見えない）。夜になったら選んだ部屋の扉から突入！</p>
     <div class="wcols">
       <div class="wcol"><h3>1. 鬼の種類</h3>
-        <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐺 肉食動物<span>足が速い。ジャンプは低い。高い場所の人にはタッチできない</span></button>
-        <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 モンスター<span>遅いが壁・足場を1〜2回で壊す。高さ1まで届く</span></button>
-        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ。斜め下へ凍結ビームを連射(自動ロックオン)。建物も地形も壊せる</span></button>
+        <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐯 虎(肉食動物)<span>足が速い。高い場所の人にはタッチできない。正面の1ブロックを一撃で壊す</span></button>
+        <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 赤鬼(モンスター)<span>金棒で正面3×3×高さ2をまとめて壊す(待ち時間1.5倍)。高さ1まで届く</span></button>
+        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ。斜め下へ凍結ビームを連射(自動ロックオン)。建物は壊せない</span></button>
       </div>
       <div class="wcol"><h3>2. ${split ? `部屋をえらぶ（定員${ONI_ROOM_CAP}匹）` : '部屋に投票'}</h3>
         ${ROOMS.map((r) => { const full = split && oniPop(r.k, p) >= ONI_ROOM_CAP;
@@ -2481,6 +2753,7 @@ document.addEventListener('touchstart', (e) => { if (e.touches.length > 1 && !e.
 // 起動・メインループ
 // =====================================================================
 init3D();
+loadExternalModels();
 const cv = renderer.domElement;
 cv.addEventListener('pointerdown', onPointerDown);
 window.addEventListener('pointermove', onPointerMove);
