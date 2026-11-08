@@ -71,6 +71,14 @@
   #bPick   { width: 66px; height: 66px; right: 98px; bottom: 86px; background: #2f9a5b; }
   #bAttack { width: 100px; height: 100px; right: 0; bottom: 0; background: #8d2bb3; font-size: 17px; }
   #buttons.oni #bJump { right: 112px; }
+  #bUp, #bDown { width: 58px; height: 50px; right: 112px; background: #2f8f7a; border-radius: 14px; font-size: 13px; }
+  #bUp { bottom: 58px; } #bDown { bottom: 0; }
+  #bView { position: fixed; top: calc(env(safe-area-inset-top) + 8px); right: calc(env(safe-area-inset-right) + 138px);
+           width: 54px; height: 54px; background: #44506a; font-size: 20px; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 24px; height: 24px; margin: -12px 0 0 -12px; pointer-events: none; }
+  #cross::before, #cross::after { content: ''; position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 2px #000, 0 0 1px #000; }
+  #cross::before { left: 11px; top: 0; width: 2px; height: 24px; }
+  #cross::after { top: 11px; left: 0; height: 2px; width: 24px; }
   #bBuild .ring { position: absolute; inset: -7px; border-radius: 50%; border: 4px solid transparent; }
 
   /* ---------- 画面 ---------- */
@@ -140,13 +148,17 @@
 <div id="telop"></div>
 <div id="toast"></div>
 
+<div id="cross" class="hud"></div>
+<div class="btn hud" id="bView">👁<small id="viewLabel">主観</small></div>
 <div id="joy" class="hud"><div id="knob"></div></div>
 <div id="buttons" class="hud">
   <div class="btn" id="bPick">拾う</div>
   <div class="btn" id="bBuild">建てる<small id="buildLabel">足場</small><div class="ring" id="buildRing"></div></div>
   <div class="btn" id="bJump">ジャンプ</div>
   <div class="btn" id="bHit">叩く</div>
-  <div class="btn" id="bAttack">攻撃<small>タッチ/破壊</small></div>
+  <div class="btn" id="bAttack">攻撃<small id="atkLabel">タッチ/破壊</small></div>
+  <div class="btn" id="bUp" style="display:none">▲上昇</div>
+  <div class="btn" id="bDown" style="display:none">▼下降</div>
 </div>
 
 <div id="screen"></div>
@@ -205,9 +217,11 @@ const EVENT_INTERVAL = 30;    // 昼のランダムイベントの間隔(秒)
 const PARTS = {
   scaffold: { name: '足場', wood: 2, stone: 0, h: 1, hp: 4 },
   wall:     { name: '壁',   wood: 0, stone: 3, h: 2, hp: 8 },
+  roof:     { name: '屋根', wood: 2, stone: 2, h: 1, hp: 5, slab: true }, // 薄い板。UFOのビームを防ぐ
 };
-const PART_ORDER = ['scaffold', 'wall'];
-const MAX_STACK = 8;                 // 積める高さの上限
+const PART_ORDER = ['scaffold', 'wall', 'roof'];
+const BUILD_REACH = 4;               // 照準から何マス先まで建てられるか
+const MAX_STACK = 10;                // 建てられる高さの上限(マス)
 const SCAFFOLD_SAFE_TIME = 5;        // 同じ足場にこの秒数いると揺れ始める
 const SCAFFOLD_CRUMBLE_TIME = 2;     // 揺れ始めてから崩れるまで
 const BUILD_MODE_TIMEOUT = 6;        // 建築プレビューが消えるまでの秒数
@@ -220,11 +234,18 @@ const HUMAN_R = 0.3, HUMAN_H = 1.6;
 const ONI = {
   carnivore: { name: '🐺 肉食動物', speed: 4.9, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
   monster:   { name: '👹 モンスター', speed: 3.2, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
+  alien:     { name: '🛸 宇宙人',     speed: 2.7, jump: 0,    r: 1.0,  h: 0.9, dmg: 0, fly: true },
 };
 const HIGH_Y = 0.5;                  // この高さ以上が「高い場所」(高鬼のセーフ)
 const MONSTER_REACH = 1.05;          // モンスターがタッチできる高さ
 const THAW_TIME = 2, HIT_STUN = 2, HIT_COST = 35, STAMINA_MAX = 100, STAMINA_REGEN = 12, HIT_RANGE = 1.5;
 const ONI_ATTACK_RANGE = 1.3, ONI_ATTACK_CD = 0.6;
+// ---- 宇宙人(UFO) ----
+const BEAM_COOLDOWN = 10;            // ビームのクールタイム(秒)
+const UFO_MIN_HEIGHT = 4, UFO_MAX_HEIGHT = 10;
+const BEAM_RADIUS = 1.3;             // UFOの真下とみなす範囲
+const UFO_STUN = 3;                  // 叩かれたUFOが操作不能になる秒数
+const ONI_TYPES = ['carnivore', 'monster', 'alien'];
 
 // ---- 表示 ----
 const CAM_DIST = 7.5, CAM_HEIGHT = 4.2, CAM_ROT_SPEED = 0.007;
@@ -264,7 +285,9 @@ if (typeof THREE === 'undefined') { $('loadErr').style.display = 'flex'; throw n
 // =====================================================================
 // obst: 0=なし 1=柵 2=岩 3=木 4=小屋   cols: 各マスに積まれたブロック   heights: 各マスの高さ
 const OB_FENCE = 1, OB_ROCK = 2, OB_TREE = 3, OB_HUT = 4, OB_DIV = 5, OB_FWALL = 6, OB_TANK = 7, OB_GATE = 8;
-let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), cols = [], huts = [];
+// heights: 地面から続くブロックの上面(歩ける高さ)  clearance: その上の空き(頭上の高さ)  topH: 一番上のブロックの上面
+let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), clearance = new Float32Array(N * N), topH = new Float32Array(N * N), cols = [], huts = [];
+let vox = [];                        // ボクセル: vox[lv*N*N + i] = そのマスを占めるブロック
 
 // 部屋は縦長の帯。部屋どうしの間は2列の仕切り壁で、通路は2か所
 const DIVW = 2;
@@ -288,6 +311,7 @@ const isPassage = (x, z) => x >= 0 && x < N && isDivX(x) && PASSAGES.some((p) =>
 function genField() {
   makeRooms();
   obst = new Uint8Array(N * N); heights = new Float32Array(N * N); cols = []; huts = [];
+  clearance = new Float32Array(N * N).fill(Infinity); topH = new Float32Array(N * N); vox = new Array(N * N * MAX_STACK).fill(null);
   for (let i = 0; i < N * N; i++) cols.push([]);
   for (let i = 0; i < N; i++) { obst[idx(i, 0)] = obst[idx(i, N - 1)] = obst[idx(0, i)] = obst[idx(N - 1, i)] = OB_FENCE; }
   for (let z = 1; z < N - 1; z++) for (let x = 1; x < N - 1; x++) if (roomOfX[x] === -1 && !isPassage(x, z)) obst[idx(x, z)] = OB_DIV;
@@ -360,21 +384,39 @@ function forCells(x, z, r, fn) {
   const x0 = Math.floor(x - r), x1 = Math.floor(x + r - 1e-6), z0 = Math.floor(z - r), z1 = Math.floor(z + r - 1e-6);
   for (let cz = z0; cz <= z1; cz++) for (let cx = x0; cx <= x1; cx++) fn(inField(cx, cz) ? idx(cx, cz) : -1);
 }
-function blockedTop(x, z, r, y) {
+// 横移動の判定: 体の高さと重なるブロックがあれば止まる(足元から登れる段ならその上面を返す)
+function blockedTop(x, z, r, y, hgt = HUMAN_H) {
   let m = -Infinity;
-  forCells(x, z, r, (i) => { const t = i < 0 ? Infinity : cellTopI(i); if (t > y + 0.02) m = Math.max(m, t); });
+  forCells(x, z, r, (i) => {
+    if (i < 0 || obst[i]) { m = Infinity; return; }
+    for (const b of cols[i]) if (b.y1 > y + 0.02 && b.y0 < y + hgt - 0.02) m = Math.max(m, b.y0 <= y + 0.02 ? b.y1 : Infinity);
+  });
   return m;
 }
-function groundAt(x, z, r) {
+// 足元(高さy以下)で一番高いブロックの上面
+function groundAt(x, z, r, y = Infinity) {
   let m = 0;
-  forCells(x, z, r, (i) => { if (i >= 0 && !obst[i]) m = Math.max(m, heights[i]); });
+  forCells(x, z, r, (i) => { if (i < 0 || obst[i]) return; for (const b of cols[i]) if (b.y1 <= y + 0.05 && b.y1 > m) m = b.y1; });
   return m;
+}
+// 頭上(高さhead以上)で一番低いブロックの底
+function ceilingAt(x, z, r, head) {
+  let m = Infinity;
+  forCells(x, z, r, (i) => { if (i < 0 || obst[i]) return; for (const b of cols[i]) if (b.y0 >= head - 0.05 && b.y0 < m) m = b.y0; });
+  return m;
+}
+function pointSolid(x, y, z) {
+  const fx = Math.floor(x), fz = Math.floor(z);
+  if (!inField(fx, fz)) return true;
+  const i = idx(fx, fz);
+  if (obst[i]) return true;
+  return cols[i].some((b) => y >= b.y0 && y < b.y1);
 }
 const inRoomCell = (k) => (x) => roomAt(x) === k;
 function randomFreeCell(margin = 1, test) {
   for (let t = 0; t < 1000; t++) {
     const x = randInt(margin, N - 1 - margin), z = randInt(margin, N - 1 - margin), i = idx(x, z);
-    if (!obst[i] && heights[i] === 0 && !isPassage(x, z) && (!test || test(x, z))) return i;
+    if (!obst[i] && heights[i] === 0 && clearance[i] > 2 && !isPassage(x, z) && (!test || test(x, z))) return i;
   }
   return idx(N >> 1, N >> 1);
 }
@@ -386,7 +428,8 @@ const bPrev = new Int32Array(N * N), bQ = new Int32Array(N * N), bDepth = new In
 function bfs(start, o) {
   bPrev.fill(-1);
   const lim = o.room === undefined ? -1 : o.room;
-  const H = (i) => (obst[i] || (lim >= 0 && roomOfX[i % N] !== lim) ? Infinity : o.breakBlocks ? 0 : heights[i]);
+  const need = o.hgt || HUMAN_H;
+  const H = (i) => (obst[i] || (lim >= 0 && roomOfX[i % N] !== lim) || (!o.breakBlocks && clearance[i] < need) ? Infinity : o.breakBlocks ? 0 : heights[i]);
   const maxUp = (o.maxUp || 0) + 0.01, maxD = o.maxDepth || 9999;
   let head = 0, tail = 0; bQ[tail++] = start; bPrev[start] = start; bDepth[start] = 0;
   while (head < tail) {
@@ -417,7 +460,7 @@ function seekPoint(e, tx, tz, maxUp, allowBreak) {
   if (ai.pathT <= 0 || ai.pFrom !== s || ai.pGoal !== g) {
     ai.pathT = 0.3; ai.pFrom = s; ai.pGoal = g; ai.pBreak = false;
     const room = restrictOf(e);
-    let r = bfs(s, { maxUp, goal: g, room });
+    let r = bfs(s, { maxUp, goal: g, room, hgt: e.hgt });
     if (!r && allowBreak) { r = bfs(s, { maxUp, goal: g, breakBlocks: true, room }); ai.pBreak = !!r; }
     ai.pNext = r ? r.next : -1;
   }
@@ -429,7 +472,7 @@ function seekPred(e, key, pred, maxUp, maxDepth) {
   const ai = e.ai, s = cellOf(e);
   if (ai.qT <= 0 || ai.qKey !== key || ai.qFrom !== s) {
     ai.qT = 0.4; ai.qKey = key; ai.qFrom = s;
-    ai.q = bfs(s, { maxUp, pred, maxDepth, room: restrictOf(e) });
+    ai.q = bfs(s, { maxUp, pred, maxDepth, room: restrictOf(e), hgt: e.hgt });
   }
   if (!ai.q) return null;
   const n = ai.q.next;
@@ -469,6 +512,7 @@ function init3D() {
   // 共有ジオメトリ
   GEO.box1 = new THREE.BoxGeometry(1, 1, 1);
   GEO.box2 = new THREE.BoxGeometry(1, 2, 1);
+  GEO.slab = new THREE.BoxGeometry(1.04, 0.2, 1.04);
   GEO.body = new THREE.CylinderGeometry(0.26, 0.3, 0.8, 8);
   GEO.head = new THREE.SphereGeometry(0.26, 10, 8);
   GEO.small = new THREE.BoxGeometry(1, 1, 1);
@@ -506,6 +550,14 @@ function init3D() {
   MAT.tank = lam(0xb5652b);
   MAT.gate = lam(0xd23b3b, { emissive: 0x330000 });
   MAT.doorFrame = lam(0x5b3a1e); MAT.door = lam(0x8a5a2e);
+  MAT.roof = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
+    c.fillStyle = '#8e3122'; c.fillRect(0, 0, s, s);
+    for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) { c.fillStyle = (r + k) % 2 ? '#c4553d' : '#b44a33'; c.fillRect(k * 16 + (r % 2 ? 8 : 0), r * 16 + 2, 14, 12); }
+  }) });
+  MAT.ufo = lam(0xb8c2cc, { emissive: 0x141c26 }); MAT.ufoRim = basic(0x55ffcc, { fog: false });
+  MAT.dome = lam(0x88e0ff, { transparent: true, opacity: 0.55, emissive: 0x113344, depthWrite: false });
+  MAT.alienSkin = lam(0x7be36b);
+  MAT.ufoBeam = basic(0x9dff8a, { transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, fog: false });
   MAT.scaffold = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
     c.fillStyle = '#8a5a2b'; c.fillRect(0, 0, s, s);
     for (let i = 0; i < 4; i++) { c.fillStyle = i % 2 ? '#c48a4f' : '#b57a40'; c.fillRect(3, 3 + i * 15, s - 6, 12); }
@@ -672,6 +724,15 @@ function makeOniMesh(type) {
     const tail = addBox(parts, MAT.carnDark, 0.1, 0.1, 0.5, 0, 0.8, -0.68); tail.rotation.x = -0.5;
     addSphere(parts, MAT.eye, 0.065, -0.12, 0.94, 0.86); addSphere(parts, MAT.eye, 0.065, 0.12, 0.94, 0.86);
     g.userData.legs = legs;
+  } else if (type === 'alien') { // UFOに乗った宇宙人
+    const saucer = new THREE.Mesh(GEO.sphere, MAT.ufo); saucer.scale.set(1.3, 0.3, 1.3); saucer.position.y = 0.3; parts.add(saucer);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.07, 6, 28), MAT.ufoRim); rim.rotation.x = Math.PI / 2; rim.position.y = 0.3; parts.add(rim);
+    addSphere(parts, MAT.alienSkin, 0.27, 0, 0.72, 0);
+    addSphere(parts, MAT.eye, 0.07, -0.1, 0.78, 0.22); addSphere(parts, MAT.eye, 0.07, 0.1, 0.78, 0.22);
+    const dome = new THREE.Mesh(GEO.sphere, MAT.dome); dome.scale.set(0.62, 0.55, 0.62); dome.position.y = 0.55; parts.add(dome);
+    for (let k = 0; k < 6; k++) { const a = (k / 6) * TAU; addSphere(parts, MAT.eye, 0.08, Math.cos(a) * 0.95, 0.12, Math.sin(a) * 0.95); }
+    const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.45, BEAM_RADIUS, 1, 18, 1, true), MAT.ufoBeam); beam.visible = false; g.add(beam);
+    g.userData.beam = beam;
   } else { // 大きな人型
     const legs = [addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, -0.3, 0.48, 0), addBox(parts, MAT.monsDark, 0.42, 0.95, 0.46, 0.3, 0.48, 0)];
     addBox(parts, MAT.mons, 1.2, 1.15, 0.72, 0, 1.52, 0);
@@ -709,7 +770,7 @@ function makeOni(i, type, isPlayer, x, z) {
   const d = ONI[type];
   return { kind: 'oni', id: i, type, isPlayer, x, z, y: 0, vy: 0, onGround: true, yaw: Math.PI, r: d.r, hgt: d.h, jumpH: d.jump,
            stun: 0, atkCd: 0, freezeCd: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), mesh: makeOniMesh(type), walkT: 0,
-           room: -1, vote: null, boost: null, entered: false, enterT: 0 };
+           room: -1, vote: null, boost: null, entered: false, enterT: 0, captives: [], beamCd: 0, beamT: 0, altTarget: UFO_MIN_HEIGHT + 1 };
 }
 function newAI() {
   return { pathT: 0, pFrom: -1, pGoal: -1, pNext: -1, pBreak: false, qT: 0, qKey: '', qFrom: -1, q: null,
@@ -736,11 +797,12 @@ function startGame() {
   $('labels').innerHTML = '';
   G = { phase: 'select', round: 1, timeLeft: 0, selectT: 0, dayElapsed: 0, nextEvent: EVENT_INTERVAL, nightT: 0,
         humans: [], onis: [], boxes: [], items: [], fruits: [], blocks: [], parts: [], fx: [], chest: null, rain: null,
-        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {},
+        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null,
         stats: { freezes: 0, thaws: 0, hits: 0, built: 0, rescues: 0 }, cam: new THREE.Vector3() };
   for (let i = 0; i < HUMAN_COUNT; i++) G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, ROOMS[0].home.x + 0.5, ROOMS[0].home.z + 0.5));
+  const cpuTypes = shuffle(ONI_TYPES.filter((t) => playerSide !== 'oni' || t !== playerOniType));
   for (let i = 0; i < ONI_COUNT; i++) {
-    const type = playerSide === 'oni' ? (i === 0 ? playerOniType : playerOniType === 'carnivore' ? 'monster' : 'carnivore') : (i % 2 ? 'monster' : 'carnivore');
+    const type = playerSide === 'oni' && i === 0 ? playerOniType : cpuTypes[(i - (playerSide === 'oni' ? 1 : 0)) % cpuTypes.length];
     const o = makeOni(i, type, playerSide === 'oni' && i === 0, 2, 2);
     o.mesh.g.visible = false;
     G.onis.push(o);
@@ -829,7 +891,7 @@ function setOniType(o, type) {
   if (o.type === type) return;
   world.remove(o.mesh.g);
   const d = ONI[type];
-  o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false;
+  o.type = type; o.r = d.r; o.hgt = d.h; o.jumpH = d.jump; o.mesh = makeOniMesh(type); o.mesh.g.visible = false; o.captives = [];
 }
 // ある地点の近く(同じ部屋)の空いているマスをランダムに選ぶ
 function spotsNear(e, n) {
@@ -837,7 +899,7 @@ function spotsNear(e, n) {
   for (let rr = 1; rr <= 7 && list.length < n * 3; rr++) for (let z = e.z - rr; z <= e.z + rr; z++) for (let x = e.x - rr; x <= e.x + rr; x++) {
     if (!inField(x, z) || roomAt(x) !== k) continue;
     const i = idx(x, z);
-    if (!obst[i] && !list.includes(i)) list.push(i);
+    if (!obst[i] && clearance[i] >= HUMAN_H && !list.includes(i)) list.push(i);
   }
   list.sort((a, b) => heights[a] - heights[b]);
   return shuffle(list.slice(0, Math.max(n * 2, 4))).slice(0, n);
@@ -861,7 +923,11 @@ function startNight() {
   // 鬼は選んだ部屋の扉の前に立ち、少ししてから入ってくる
   for (const k of G.oniRooms) {
     const list = G.onis.filter((o) => o.room === k), spots = spotsNear(ROOMS[k].door, list.length);
-    list.forEach((o, j) => { const i = spots[j % spots.length]; o.x = cX(i); o.z = cZ(i); o.y = heights[i]; o.vy = 0; o.ai = newAI(); o.yaw = 0; o.entered = false; o.enterT = ONI_ENTER_DELAY; o.stun = 0; });
+    list.forEach((o, j) => {
+      const i = spots[j % spots.length]; o.x = cX(i); o.z = cZ(i); o.y = heights[i]; o.vy = 0; o.ai = newAI(); o.yaw = 0; o.entered = false; o.enterT = ONI_ENTER_DELAY; o.stun = 0;
+      o.captives = []; o.beamCd = 0; o.beamT = 0;
+      if (ONI[o.type].fly) o.y = o.altTarget = UFO_MIN_HEIGHT + 1;
+    });
   }
   G.buildMode = false;
   if (G.chest) { world.remove(G.chest.mesh); G.boxes = G.boxes.filter((b) => b !== G.chest); G.chest = null; }
@@ -889,7 +955,8 @@ function endNight() {
   G.round++;
   setGates(true);
   // 夜明け: 凍っていた人も元に戻り、全員が自分の部屋に戻る
-  for (const h of G.humans) if (h.state === 'frozen') { h.state = 'ok'; h.thaw = 0; }
+  for (const h of G.humans) if (h.state === 'frozen') { h.state = 'ok'; h.thaw = 0; h.captor = null; }
+  for (const o of G.onis) o.captives = [];
   for (const r of ROOMS) placeInRoom(G.humans.filter((h) => h.state !== 'out' && h.room === r.k), r.k);
   for (const o of G.onis) { o.entered = false; o.mesh.g.visible = false; }
   G.oniRooms = [];
@@ -947,56 +1014,120 @@ function frontCell(e) {
   const x = Math.floor(e.x) + sx, z = Math.floor(e.z) + sz;
   return inField(x, z) ? idx(x, z) : -1;
 }
-function canPlace(i, type) {
-  if (i < 0 || obst[i] || isPassage(i % N, (i / N) | 0)) return false;
-  const p = PARTS[type], base = heights[i];
-  if (base + p.h > MAX_STACK) return false;
-  const x = i % N, z = (i / N) | 0;
-  for (const b of G.boxes) if (!b.opened && Math.floor(b.x) === x && Math.floor(b.z) === z) return false;
-  for (const f of G.fruits) if (Math.floor(f.x) === x && Math.floor(f.z) === z) return false;
-  for (const e of [...G.humans, ...G.onis]) { // キャラと重なる場所には置けない
-    if (e.state === 'out' || (e.kind === 'oni' && (G.phase !== 'night' || !e.entered))) continue;
-    if (e.x + e.r <= x || e.x - e.r >= x + 1 || e.z + e.r <= z || e.z - e.r >= z + 1) continue;
-    if (e.y < base + p.h && e.y + e.hgt > base) return false;
+// ---------------------------------------------------------------------
+// ブロック(マイクラ式): 1マス=1ボクセル。壁は縦2マス、屋根は薄い板
+// ---------------------------------------------------------------------
+const DIRS6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+const vIdx = (i, lv) => lv * N * N + i;
+const voxAt = (x, lv, z) => (inField(x, z) && lv >= 0 && lv < MAX_STACK ? vox[vIdx(idx(x, z), lv)] : null);
+function recomputeColumn(i) {
+  const list = cols[i].slice().sort((a, b) => a.y0 - b.y0);
+  let floor = 0, clear = Infinity, top = 0;
+  for (const b of list) {
+    top = Math.max(top, b.y1);
+    if (clear === Infinity) { if (b.y0 <= floor + 0.01) floor = Math.max(floor, b.y1); else clear = b.y0 - floor; }
   }
-  return true;
+  heights[i] = floor; clearance[i] = clear; topH[i] = top;
 }
-function placeBlock(h, i, type, silent) {
+// 照準のレイ: 最初に当たったブロック・地面・地形の手前のマスを返す
+function cellSolid(x, y, z) {
+  if (y < 0 || !inField(x, z)) return true;
+  const i = idx(x, z);
+  if (obst[i]) return y < (OB_HEIGHT[obst[i]] || 3);
+  return y < MAX_STACK && !!vox[vIdx(i, y)];
+}
+function raycastCell(o, d, maxT) {
+  let x = Math.floor(o.x), y = Math.floor(o.y), z = Math.floor(o.z);
+  const sx = Math.sign(d.x), sy = Math.sign(d.y), sz = Math.sign(d.z);
+  const tdx = sx ? Math.abs(1 / d.x) : Infinity, tdy = sy ? Math.abs(1 / d.y) : Infinity, tdz = sz ? Math.abs(1 / d.z) : Infinity;
+  let tx = sx > 0 ? (x + 1 - o.x) * tdx : sx < 0 ? (o.x - x) * tdx : Infinity;
+  let ty = sy > 0 ? (y + 1 - o.y) * tdy : sy < 0 ? (o.y - y) * tdy : Infinity;
+  let tz = sz > 0 ? (z + 1 - o.z) * tdz : sz < 0 ? (o.z - z) * tdz : Infinity;
+  let prev = null;
+  for (let k = 0; k < 64; k++) {
+    if (cellSolid(x, y, z)) return prev ? { prev, hit: { x, y, z } } : null;
+    prev = { x, y, z };
+    let t;
+    if (tx < ty && tx < tz) { t = tx; x += sx; tx += tdx; } else if (ty < tz) { t = ty; y += sy; ty += tdy; } else { t = tz; z += sz; tz += tdz; }
+    if (t > maxT) return null;
+  }
+  return null;
+}
+// 置けるか調べる(だめなら理由を返す)
+function placeCheck(x, lv, z, type) {
+  if (!inField(x, z)) return 'そこには置けない';
+  const i = idx(x, z), p = PARTS[type];
+  if (obst[i] || isPassage(x, z)) return 'そこには置けない';
+  if (lv < 0 || lv + p.h > MAX_STACK) return '高すぎて置けない';
+  for (let k = 0; k < p.h; k++) if (vox[vIdx(i, lv + k)]) return 'そこには置けない';
+  if (lv === 0) for (const b of G.boxes) if (!b.opened && Math.floor(b.x) === x && Math.floor(b.z) === z) return '箱があって置けない';
+  let sup = lv === 0; // 地面か、となりのブロックにくっついていること
+  for (let k = 0; k < p.h && !sup; k++) for (const [dx, dy, dz] of DIRS6) { const nb = voxAt(x + dx, lv + k + dy, z + dz); if (nb) { sup = true; break; } }
+  if (!sup) return '支えがない';
+  const y0 = lv + (p.slab ? 0.8 : 0), y1 = lv + p.h;
+  for (const e of [...G.humans, ...G.onis]) {
+    if (e.state === 'out' || (e.kind === 'oni' && (G.phase !== 'night' || !e.entered || ONI[e.type].fly))) continue;
+    if (e.x + e.r <= x || e.x - e.r >= x + 1 || e.z + e.r <= z || e.z - e.r >= z + 1) continue;
+    if (e.y < y1 && e.y + e.hgt > y0) return 'キャラと重なって置けない';
+  }
+  return null;
+}
+function placeBlockAt(h, x, lv, z, type, silent) {
   const p = PARTS[type];
   if (h.wood < p.wood || h.stone < p.stone) { if (!silent) toast(`資材が足りない (${p.name}: ${costText(type)})`); return false; }
-  if (!canPlace(i, type)) { if (!silent) toast('そこには置けない'); return false; }
+  const why = placeCheck(x, lv, z, type);
+  if (why) { if (!silent) toast(why); return false; }
   h.wood -= p.wood; h.stone -= p.stone;
-  const col = cols[i], base = heights[i];
-  const mesh = new THREE.Mesh(p.h === 2 ? GEO.box2 : GEO.box1, type === 'wall' ? MAT.wall : MAT.scaffold);
-  const b = { type, i, h: p.h, hp: p.hp, maxHp: p.hp, base, visY: base + 0.6, vy: 0, crumble: -1, shake: 0, mesh };
-  col.push(b); heights[i] = base + p.h;
-  mesh.position.set(cX(i), b.visY + p.h / 2, cZ(i)); world.add(mesh);
-  G.blocks.push(b); G.stats.built++;
-  burst(cX(i), base + p.h, cZ(i), type === 'wall' ? 0xb8c0cc : 0xc98a4b, 8);
-  // 積んだ場所にある資材は上に乗せる
-  for (const it of G.items) if (Math.floor(it.x) === i % N && Math.floor(it.z) === ((i / N) | 0) && it.y < heights[i]) it.y = heights[i];
+  const i = idx(x, z);
+  const mesh = new THREE.Mesh(p.slab ? GEO.slab : p.h === 2 ? GEO.box2 : GEO.box1, type === 'wall' ? MAT.wall : type === 'roof' ? MAT.roof : MAT.scaffold);
+  const b = { type, i, x, z, lv, h: p.h, y0: lv + (p.slab ? 0.8 : 0), y1: lv + p.h, hp: p.hp, maxHp: p.hp, crumble: -1, shake: 0, pop: 0.2, mesh };
+  for (let k = 0; k < p.h; k++) vox[vIdx(i, lv + k)] = b;
+  cols[i].push(b); recomputeColumn(i);
+  world.add(mesh); G.blocks.push(b); G.stats.built++;
+  burst(cX(i), b.y1, cZ(i), blockColor(b), 8);
+  for (const it of G.items) if (Math.floor(it.x) === x && Math.floor(it.z) === z && it.y >= b.y0 - 0.1 && it.y < b.y1) it.y = b.y1; // 資材は上に乗せる
   return true;
 }
-function removeBlock(b) {
-  const col = cols[b.i], k = col.indexOf(b);
+const blockColor = (b) => (b.type === 'wall' ? 0x9aa3ad : b.type === 'roof' ? 0xc4553d : 0xb07a43);
+function removeBlock(b, fx = true) {
+  const k = cols[b.i].indexOf(b);
   if (k < 0) return;
-  col.splice(k, 1);
-  world.remove(b.mesh);
+  cols[b.i].splice(k, 1);
+  for (let j = 0; j < b.h; j++) if (vox[vIdx(b.i, b.lv + j)] === b) vox[vIdx(b.i, b.lv + j)] = null;
+  recomputeColumn(b.i);
   G.blocks.splice(G.blocks.indexOf(b), 1);
-  let base = 0;
-  for (const o of col) { o.base = base; base += o.h; } // 上に積まれていたブロックは落下する
-  heights[b.i] = base;
-  burst(cX(b.i), b.base + b.h / 2, cZ(b.i), b.type === 'wall' ? 0x9aa3ad : 0xb07a43, 16);
+  world.remove(b.mesh);
+  if (fx) burst(cX(b.i), (b.y0 + b.y1) / 2, cZ(b.i), blockColor(b), 16);
+}
+// 地面までつながっていないブロックは、まとめて落下して消える
+function settleBlocks() {
+  const grounded = new Set(), q = [];
+  for (const b of G.blocks) if (b.lv === 0) { grounded.add(b); q.push(b); }
+  while (q.length) {
+    const b = q.pop();
+    for (let j = 0; j < b.h; j++) for (const [dx, dy, dz] of DIRS6) {
+      const nb = voxAt(b.x + dx, b.lv + j + dy, b.z + dz);
+      if (nb && !grounded.has(nb)) { grounded.add(nb); q.push(nb); }
+    }
+  }
+  const loose = G.blocks.filter((b) => !grounded.has(b));
+  for (const b of loose) {
+    removeBlock(b, false);
+    world.add(b.mesh); // 落ちていく演出のあいだだけ残す
+    G.falling.push({ mesh: b.mesh, vy: 0, t: 0, color: blockColor(b) });
+  }
+  if (loose.length) { const b = loose[0]; addFx(cX(b.i), b.y1 + 0.3, cZ(b.i), loose.length > 1 ? `ガラガラ…(${loose.length}個)` : 'ガラッ', '#ffd34d'); }
 }
 function damageBlock(b, dmg) {
   b.hp -= dmg; b.shake = 0.25;
-  burst(cX(b.i), b.base + b.h / 2, cZ(b.i), b.type === 'wall' ? 0x9aa3ad : 0xb07a43, 6);
-  if (b.hp <= 0) { addFx(cX(b.i), b.base + b.h + 0.4, cZ(b.i), 'バキッ!', '#fff'); removeBlock(b); }
+  burst(cX(b.i), (b.y0 + b.y1) / 2, cZ(b.i), blockColor(b), 6);
+  if (b.hp <= 0) { addFx(cX(b.i), b.y1 + 0.4, cZ(b.i), 'バキッ!', '#fff'); removeBlock(b); settleBlocks(); }
 }
-// 鬼の高さにあるブロック(なければ一番下)を狙う
+// 鬼の攻撃: その列で鬼の体の高さにあるブロック(根元)を狙う → 上がまとめて崩れる
 function attackCell(o, i) {
-  const col = cols[i]; if (!col || !col.length) return false;
-  const b = col.find((x) => x.base + x.h > o.y + 0.05) || col[col.length - 1];
+  const col = cols[i]; if (!col || !col.length || ONI[o.type].fly) return false;
+  const sorted = col.slice().sort((a, b) => a.y0 - b.y0);
+  const b = sorted.find((x) => x.y1 > o.y + 0.05 && x.y0 < o.y + o.hgt) || sorted[0];
   damageBlock(b, ONI[o.type].dmg * (o.dmgMul || 1));
   return true;
 }
@@ -1008,7 +1139,7 @@ function costText(type) { const p = PARTS[type], a = []; if (p.wood) a.push(`木
 function jump(e) { if (e.onGround && !(e.stun > 0) && e.state !== 'frozen') { e.vy = Math.sqrt(2 * GRAVITY * e.jumpH); e.onGround = false; } }
 
 function openBox(b) {
-  if (b.opened || b.y > 0.01 + groundAt(b.x, b.z, 0.1)) return;
+  if (b.opened || b.y > 0.01 + groundAt(b.x, b.z, 0.1, b.y)) return;
   b.opened = true;
   const n = b.big ? CHEST_ITEMS : BOX_ITEMS;
   for (let k = 0; k < n; k++) {
@@ -1032,16 +1163,65 @@ function doHit(h) {
   h.stamina -= HIT_COST; h.swing = 0.3;
   let hit = false;
   for (const o of G.onis) {
-    const d = hdist(o, h);
-    if (d > HIT_RANGE + o.r || Math.abs(o.y - h.y) > 1.6) continue;
-    const dot = (Math.sin(h.yaw) * (o.x - h.x) + Math.cos(h.yaw) * (o.z - h.z)) / (d || 1);
-    if (dot < 0.2 && d > h.r + o.r + 0.2) continue;
-    o.stun = HIT_STUN; hit = true;
-    addFx(o.x, o.y + o.hgt + 0.3, o.z, 'ゴンッ!', '#ffe066'); burst(o.x, o.y + o.hgt * 0.6, o.z, 0xffe066, 10);
+    if (!o.entered || G.phase !== 'night') continue;
+    if (!canHit(h, o)) continue;
+    hit = true;
+    if (ONI[o.type].fly) { // UFOを叩くと閉じ込められた人が全員出てきて、UFOは操作不能に
+      const n = releaseCaptives(o); o.stun = UFO_STUN;
+      addFx(o.x, o.y + 1.2, o.z, n ? `ゴンッ! ${n}人を救出!` : 'ゴンッ!', '#ffe066');
+    } else { o.stun = HIT_STUN; addFx(o.x, o.y + o.hgt + 0.3, o.z, 'ゴンッ!', '#ffe066'); }
+    burst(o.x, o.y + o.hgt * 0.6, o.z, 0xffe066, 10);
   }
   if (hit) G.stats.hits++;
 }
+function canHit(h, o) {
+  const d = hdist(o, h);
+  if (d > HIT_RANGE + o.r) return false;
+  if (ONI[o.type].fly) { const gap = o.y - (h.y + h.hgt); if (gap > 1.2 || o.y < h.y - 0.5) return false; } // 高い所からなら届く
+  else if (Math.abs(o.y - h.y) > 1.6) return false;
+  const dot = (Math.sin(h.yaw) * (o.x - h.x) + Math.cos(h.yaw) * (o.z - h.z)) / (d || 1);
+  return dot >= 0.2 || d <= h.r + o.r + 0.2;
+}
+// 頭の上にブロック(屋根など)があればUFOのビームは届かない
+function coveredFromAbove(h, topY = 99) {
+  let cov = false;
+  forCells(h.x, h.z, 0.05, (i) => { if (i >= 0) for (const b of cols[i]) if (b.y0 >= h.y + 0.5 && b.y0 < topY) cov = true; });
+  return cov;
+}
+function doBeam(o) {
+  if (o.stun > 0) return;
+  if (o.beamCd > 0) { if (o.isPlayer) toast(`ビーム充電中 あと${Math.ceil(o.beamCd)}秒`); return; }
+  o.beamCd = BEAM_COOLDOWN; o.beamT = 0.8;
+  let got = 0, guarded = 0;
+  for (const h of G.humans) {
+    if (h.state !== 'ok' || hdist(h, o) > BEAM_RADIUS || h.y >= o.y) continue;
+    if (coveredFromAbove(h, o.y)) { guarded++; addFx(h.x, h.y + 2, h.z, '屋根でガード!', '#7CFC9A'); continue; }
+    capture(o, h); got++;
+  }
+  if (!got && o.isPlayer) toast(guarded ? '屋根にさえぎられた！' : '真下に人がいない');
+}
+function capture(o, h) {
+  if (h.freezeCount >= MAX_FREEZE_COUNT) { eliminate(h, '即脱落!'); return; }
+  h.freezeCount++; h.state = 'frozen'; h.captor = o; h.freezeTimer = FREEZE_LIMIT; h.thaw = 0; G.stats.freezes++;
+  o.captives.push(h);
+  addFx(h.x, h.y + 2, h.z, '吸い込まれた!', '#9dff8a'); burst(h.x, h.y + 1, h.z, 0x9dff8a, 16);
+  if (h.isPlayer) toast('UFOに閉じこめられた！ 仲間がUFOを叩けば出られる');
+}
+function releaseCaptives(o) {
+  const list = o.captives.filter((h) => h.state === 'frozen' && h.captor === o);
+  const spots = list.length ? spotsNear({ x: Math.floor(o.x), z: Math.floor(o.z) }, list.length) : [];
+  list.forEach((h, j) => {
+    const i = spots[j % Math.max(1, spots.length)];
+    h.state = 'ok'; h.captor = null; h.thaw = 0; G.stats.thaws++;
+    if (i !== undefined) { h.x = cX(i); h.z = cZ(i); }
+    h.y = Math.max(h.y, groundAt(h.x, h.z, h.r, o.y) + 0.1); h.vy = 0;
+    if (h.isPlayer) toast('UFOから脱出した！');
+  });
+  o.captives = [];
+  return list.length;
+}
 function canTouch(o, h) {
+  if (ONI[o.type].fly) return false;                    // UFOはタッチしない(ビームで吸い上げる)
   if (o.type === 'carnivore') return h.y < HIGH_Y;     // 高鬼: 高い場所の人にはタッチできない
   return h.y <= MONSTER_REACH;                          // モンスターは高さ1まで届く
 }
@@ -1065,6 +1245,7 @@ function eliminate(h, text) {
   if (h.isPlayer) { telop('あなたは脱落… 仲間を観戦中'); G.buildMode = false; }
 }
 function doOniAttack(o) {
+  if (ONI[o.type].fly) { if (G.phase === 'night') doBeam(o); return; }
   if (o.atkCd > 0 || o.stun > 0) return;
   o.atkCd = ONI_ATTACK_CD; o.swing = 0.3;
   const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
@@ -1113,7 +1294,8 @@ function toast(text) {
 // =====================================================================
 // 入力
 // =====================================================================
-const input = { joyId: null, camId: null, base: { x: 0, y: 0 }, sx: 0, sy: 0, camLastX: 0, keys: {} };
+const input = { joyId: null, camId: null, base: { x: 0, y: 0 }, sx: 0, sy: 0, camLastX: 0, camLastY: 0, keys: {}, up: false, down: false };
+let camMode = 'third', camPitch = -0.15;  // third=客観(三人称) first=主観(一人称)
 const JOY_R = 56;
 function placeJoy(x, y, kx, ky) {
   const j = $('joy'); j.style.left = x + 'px'; j.style.top = y + 'px';
@@ -1127,7 +1309,7 @@ function onPointerDown(e) {
     input.joyId = e.pointerId; input.base = { x: e.clientX, y: e.clientY }; input.sx = input.sy = 0;
     $('joy').classList.add('active'); placeJoy(e.clientX, e.clientY, 0, 0);
   } else if (e.clientX >= innerWidth * 0.5 && input.camId === null) {
-    input.camId = e.pointerId; input.camLastX = e.clientX;
+    input.camId = e.pointerId; input.camLastX = e.clientX; input.camLastY = e.clientY;
   }
 }
 function onPointerMove(e) {
@@ -1140,6 +1322,8 @@ function onPointerMove(e) {
     placeJoy(input.base.x, input.base.y, dx, dy);
   } else if (e.pointerId === input.camId) {
     camYaw -= (e.clientX - input.camLastX) * CAM_ROT_SPEED; input.camLastX = e.clientX;
+    if (camMode === 'first') camPitch = clamp(camPitch - (e.clientY - input.camLastY) * CAM_ROT_SPEED, -1.35, 1.25); // 主観は上下も
+    input.camLastY = e.clientY;
   }
 }
 function onPointerUp(e) {
@@ -1160,15 +1344,40 @@ bindButton($('bPick'), () => canAct() && doPick(G.player));
 bindButton($('bHit'), () => canAct() && doHit(G.player));
 bindButton($('bJump'), () => playing() && G.player.state !== 'out' && jump(G.player));
 bindButton($('bAttack'), () => playing() && G.player.kind === 'oni' && G.player.entered && doOniAttack(G.player));
-// 建てる: 1回目でプレビュー、2回目で設置。長押しで種類切り替え
+bindButton($('bUp'), () => (input.up = true), () => (input.up = false));
+bindButton($('bDown'), () => (input.down = true), () => (input.down = false));
+bindButton($('bView'), () => toggleView());
+function toggleView() {
+  camMode = camMode === 'third' ? 'first' : 'third';
+  if (camMode === 'first') camPitch = -0.15;
+  $('viewLabel').textContent = camMode === 'third' ? '主観' : '客観';
+  toast(camMode === 'first' ? '👁 主観視点' : '🎥 客観視点');
+}
+// 建てる: 照準の先のプレビューに設置。長押しで種類切り替え
 const buildPress = { down: false, t: 0, switched: false };
 bindButton($('bBuild'), () => { buildPress.down = true; buildPress.t = 0; buildPress.switched = false; },
   (cancel) => { if (buildPress.down && !buildPress.switched && !cancel) pressBuild(); buildPress.down = false; $('buildRing').style.borderColor = 'transparent'; });
 function pressBuild() {
   if (!canAct()) return;
-  G.buildIdle = 0;
-  if (!G.buildMode) { G.buildMode = true; return; }
-  placeBlock(G.player, frontCell(G.player), G.player.buildType, false);
+  const t = G.buildTarget;
+  if (!t) { toast(`照準を${BUILD_REACH}マス以内の地面かブロックに向けよう`); return; }
+  placeBlockAt(G.player, t.x, t.lv, t.z, G.player.buildType, false);
+}
+// 照準(画面中央)のレイで建てる場所を決める
+function updateBuildTarget() {
+  const p = G.player;
+  G.buildTarget = null;
+  if (p.kind !== 'human' || p.state !== 'ok' || G.phase === 'select') return;
+  camera.getWorldDirection(_v);
+  const d = { x: _v.x, y: _v.y, z: _v.z }, o = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
+  const eye = { x: p.x, y: p.y + 1.45, z: p.z };
+  const r = raycastCell(o, d, Math.hypot(o.x - eye.x, o.y - eye.y, o.z - eye.z) + BUILD_REACH + 1);
+  if (!r) return;
+  const c = r.prev, dist = Math.hypot(c.x + 0.5 - eye.x, c.y + 0.5 - eye.y, c.z + 0.5 - eye.z);
+  if (dist > BUILD_REACH + 0.5) return;
+  const part = PARTS[p.buildType];
+  const why = placeCheck(c.x, c.y, c.z, p.buildType) || (p.wood < part.wood || p.stone < part.stone ? '資材が足りない' : null);
+  G.buildTarget = { x: c.x, lv: c.y, z: c.z, why };
 }
 function switchPart() {
   if (!canAct()) return;
@@ -1181,6 +1390,7 @@ window.addEventListener('keydown', (e) => {
   input.keys[e.code] = true;
   if (!playing() || e.repeat) return;
   if (e.code === 'Space' && G.phase !== 'select' && !(G.player.kind === 'oni' && G.phase !== 'night')) jump(G.player);
+  if (e.code === 'KeyV') toggleView();
   if (G.player.kind === 'human') {
     if (e.code === 'KeyJ') canAct() && doPick(G.player);
     if (e.code === 'KeyK') pressBuild();
@@ -1196,6 +1406,7 @@ function playerMove() {
   const kx = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), ky = (k.KeyS ? 1 : 0) - (k.KeyW ? 1 : 0);
   if (kx || ky) { const l = Math.hypot(kx, ky); sx = kx / l; sy = ky / l; }
   if (k.ArrowLeft) camYaw += 0.04; if (k.ArrowRight) camYaw -= 0.04;
+  if (camMode === 'first') { if (k.ArrowUp) camPitch = Math.min(1.25, camPitch + 0.03); if (k.ArrowDown) camPitch = Math.max(-1.35, camPitch - 0.03); }
   const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw), rx = Math.cos(camYaw), rz = -Math.sin(camYaw);
   return { x: rx * sx - fx * sy, z: rz * sx - fz * sy };
 }
@@ -1218,15 +1429,24 @@ function moveBody(e, dx, dz) {
   const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dz)) / 0.2) || 1;
   for (let s = 0; s < steps; s++) {
     const sx = dx / steps, sz = dz / steps;
-    let b = blockedTop(e.x + sx, e.z, e.r, e.y); if (b === -Infinity && !roomOK(e, e.x + sx)) b = Infinity;
+    let b = blockedTop(e.x + sx, e.z, e.r, e.y, e.hgt); if (b === -Infinity && !roomOK(e, e.x + sx)) b = Infinity;
     if (b === -Infinity) e.x += sx; else e.blocked = Math.max(e.blocked, b);
-    b = blockedTop(e.x, e.z + sz, e.r, e.y); if (b === -Infinity) e.z += sz; else e.blocked = Math.max(e.blocked, b);
+    b = blockedTop(e.x, e.z + sz, e.r, e.y, e.hgt); if (b === -Infinity) e.z += sz; else e.blocked = Math.max(e.blocked, b);
   }
 }
 function physics(e, dt) {
-  e.vy -= GRAVITY * dt; e.y += e.vy * dt;
-  const g = groundAt(e.x, e.z, e.r);
-  if (e.y <= g) { e.y = g; e.vy = 0; e.onGround = true; } else e.onGround = false;
+  const prevY = e.y;
+  e.vy -= GRAVITY * dt; let ny = e.y + e.vy * dt;
+  if (e.vy > 0) { const c = ceilingAt(e.x, e.z, e.r, prevY + e.hgt); if (ny + e.hgt > c) { ny = c - e.hgt; e.vy = 0; } } // 頭をぶつける
+  const g = groundAt(e.x, e.z, e.r, prevY);
+  if (ny <= g) { ny = g; e.vy = 0; e.onGround = true; } else e.onGround = false;
+  e.y = ny;
+}
+// UFO: ブロックや地形を気にせず飛ぶ(部屋からは出られない)
+function flyMove(o, dx, dz) {
+  const nx = clamp(o.x + dx, 1.2, N - 1.2), nz = clamp(o.z + dz, 1.2, N - 1.2);
+  if (roomOK(o, nx)) o.x = nx;
+  o.z = nz;
 }
 function autoJump(e) { // CPU: 登れる段差に当たったらジャンプ
   if (e.onGround && e.blocked !== -Infinity && e.blocked - e.y <= e.jumpH - 0.12) jump(e);
@@ -1266,7 +1486,7 @@ function fleeDir(h) {
 }
 const activeOnis = () => G.onis.filter((o) => o.entered && G.phase === 'night');
 const sameRoom = (a, b) => roomAt(Math.floor(a.x)) === roomAt(Math.floor(b.x));
-const isCrumbling = (i) => { const c = cols[i]; return c.length && c[c.length - 1].crumble >= 0; };
+const isCrumbling = (i) => cols[i].some((b) => b.crumble >= 0);
 const cellFree = (i) => {
   if (obst[i] || heights[i] !== 0) return false;
   const x = i % N, z = (i / N) | 0;
@@ -1297,7 +1517,7 @@ function humanAI(h, dt) {
       if (ai.buildT <= 0) {
         ai.buildT = 0.35;
         const c = ai.queue[0];
-        if (Math.hypot(cX(c) - h.x, cZ(c) - h.z) < 3.8 && placeBlock(h, c, 'scaffold', true)) ai.queue.shift(); else ai.queue = [];
+        if (Math.hypot(cX(c) - h.x, cZ(c) - h.z) < 3.8 && placeBlockAt(h, c % N, Math.round(heights[c]), (c / N) | 0, 'scaffold', true)) ai.queue.shift(); else ai.queue = [];
       }
     } else {
       if (ai.buildT <= 0) { ai.buildT = rand(2, 4); if (h.wood >= 6 && ai.towers < 2) planStair(h); }
@@ -1316,14 +1536,23 @@ function humanAI(h, dt) {
     const here = cellOf(h);
     if (h.standTime > 3.5) { ai.banCell = here; ai.banT = 6; }
     const threats = onis.filter((o) => o.stun <= 0 && hdist(o, h) < 9);
-    const safeHere = threats.length > 0 && threats.every((o) => !canTouch(o, h)) && h.standTime <= 3.5 &&
+    const danger = (o) => (ONI[o.type].fly ? !coveredFromAbove(h) && hdist(o, h) < 3.5 : canTouch(o, h));
+    const safeHere = threats.length > 0 && threats.every((o) => !danger(o)) && h.standTime <= 3.5 &&
                      !threats.some((o) => o.type === 'monster' && hdist(o, h) < 4);
     const minOni = (p) => Math.min(...activeOnis().map((o) => hdist(o, p) * (o.stun > 0 ? 1.8 : 1)));
     // 鬼のいない部屋の人は、通路が開いたら赤いランプの部屋へ救援に行く
     const rescuer = !G.oniRooms.includes(h.room) && G.rescueOpened;
-    const ally = nearest(G.humans, h, (a) => a.state === 'frozen' && (rescuer ? true : hdist(a, h) < 14 && sameRoom(a, h)) && minOni(a) > (rescuer ? 8 : 7));
+    const ally = nearest(G.humans, h, (a) => a.state === 'frozen' && !a.captor && (rescuer ? true : hdist(a, h) < 14 && sameRoom(a, h)) && minOni(a) > (rescuer ? 8 : 7));
     const away = roomAt(Math.floor(h.x)) !== h.room; // 救援で他の部屋に来ている
-    if (safeHere) {
+    // 仲間を閉じ込めたUFOがビームの充電中なら、下にもぐってジャンプして叩く
+    const ufo = activeOnis().find((o) => ONI[o.type].fly && o.captives.length && o.beamCd > 1.5 && o.stun <= 0 && sameRoom(o, h) && hdist(o, h) < 8);
+    if (ufo && h.stamina >= HIT_COST) {
+      const d = hdist(ufo, h);
+      mv = d > 0.8 ? seekPoint(h, ufo.x, ufo.z, 1, false) : { x: 0, z: 0 };
+      if (d < 2.2 && h.onGround) jump(h);
+      h.yaw = Math.atan2(ufo.x - h.x, ufo.z - h.z);
+      if (canHit(h, ufo) && ai.hitCd <= 0) { doHit(h); ai.hitCd = 0.8; }
+    } else if (safeHere) {
       h.yaw = Math.atan2(near.x - h.x, near.z - h.z);
     } else if (away && nd < 7) { // 救援中に鬼が近づいたら自分の部屋へ逃げ帰る
       mv = seekPoint(h, ROOMS[h.room].home.x + 0.5, ROOMS[h.room].home.z + 0.5, 1, false);
@@ -1334,7 +1563,7 @@ function humanAI(h, dt) {
       if (near.type === 'carnivore' && nd > 1.4)
         r = seekPred(h, 'high', (i) => heights[i] >= 1 && !obst[i] && !isCrumbling(i) && !(ai.banT > 0 && i === ai.banCell), 1, 12);
       mv = r ? r.dir : fleeDir(h);
-      if (nd < 1.6 && near.stun <= 0 && h.stamina >= HIT_COST && ai.hitCd <= 0) {
+      if (near.stun <= 0 && h.stamina >= HIT_COST && ai.hitCd <= 0 && canHit(h, near)) {
         h.yaw = Math.atan2(near.x - h.x, near.z - h.z); doHit(h); ai.hitCd = 1.2;
       }
     } else if (roomAt(Math.floor(h.x)) !== h.room) { // 救援が終わったら自分の部屋へ戻る
@@ -1346,7 +1575,27 @@ function humanAI(h, dt) {
   if (ai.unstickT > 0) { ai.unstickT -= dt; mv = { x: Math.sin(ai.unstickA), z: Math.cos(ai.unstickA) }; }
   h.mv = mv;
 }
+// UFO: 屋根の下にいない人の真上へ飛んでいき、ビームで吸い上げる
+function ufoAI(o) {
+  const ai = o.ai; ai.wanderT -= 1 / 60;
+  let mv = { x: 0, z: 0 };
+  if (o.stun > 0) { o.mv = mv; return; }
+  const ok = G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room && !coveredFromAbove(h));
+  const t = nearest(ok, o);
+  if (t) {
+    const d = hdist(t, o);
+    if (d > 0.35) mv = dir2(t.x - o.x, t.z - o.z);
+    o.altTarget = clamp(t.y + (t.y > 1.5 ? 5.5 : 4.2), UFO_MIN_HEIGHT, UFO_MAX_HEIGHT); // 高い所の人には叩かれないよう高めに
+    if (d < 0.9 && o.beamCd <= 0) doBeam(o);
+  } else {
+    if (ai.wander < 0 || ai.wanderT <= 0 || hdist(o, { x: cX(ai.wander), z: cZ(ai.wander) }) < 1) { ai.wander = randomFreeCell(2, inRoomCell(o.room)); ai.wanderT = rand(4, 8); }
+    mv = dir2(cX(ai.wander) - o.x, cZ(ai.wander) - o.z); mv.x *= 0.6; mv.z *= 0.6;
+    o.altTarget = 6;
+  }
+  o.mv = mv;
+}
 function oniAI(o, dt) {
+  if (ONI[o.type].fly) { ufoAI(o); return; }
   const ai = o.ai; ai.wanderT -= dt;
   let mv = { x: 0, z: 0 };
   if (o.stun > 0) { o.mv = mv; return; }
@@ -1445,6 +1694,16 @@ function update(dt) {
     if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, z: 0 } : playerMove(); else { o.ai.pathT -= dt; o.ai.qT -= dt; oniAI(o, dt); }
     const sp = ONI[o.type].speed * (o.speedMul || 1);
     const m = Math.hypot(o.mv.x, o.mv.z);
+    if (ONI[o.type].fly) { // UFO
+      o.beamCd = Math.max(0, o.beamCd - dt); o.beamT = Math.max(0, o.beamT - dt);
+      if (o.stun <= 0) {
+        if (o.isPlayer) o.y += ((input.up || input.keys.KeyR ? 1 : 0) - (input.down || input.keys.KeyF ? 1 : 0)) * 3 * dt;
+        else o.y += clamp(o.altTarget - o.y, -2 * dt, 2 * dt);
+        o.y = clamp(o.y, UFO_MIN_HEIGHT, UFO_MAX_HEIGHT);
+        if (m > 0.05) { o.yaw = Math.atan2(o.mv.x, o.mv.z); flyMove(o, o.mv.x * sp * dt, o.mv.z * sp * dt); }
+      }
+      continue;
+    }
     if (o.stun <= 0 && m > 0.05) { o.yaw = Math.atan2(o.mv.x, o.mv.z); moveBody(o, o.mv.x * sp * dt, o.mv.z * sp * dt); o.walkT += dt * sp * m; }
     else o.blocked = -Infinity;
     if (!o.isPlayer && o.stun <= 0) { autoJump(o); checkStuck(o, dt); }
@@ -1454,7 +1713,7 @@ function update(dt) {
   // --- 箱 ---
   for (const b of G.boxes) {
     if (b.opened) continue;
-    const g = groundAt(b.x, b.z, 0.3);
+    const g = groundAt(b.x, b.z, 0.3, b.y);
     if (b.y > g) { b.vy -= GRAVITY * dt; b.y = Math.max(g, b.y + b.vy * dt); if (b.y === g) { b.vy = 0; burst(b.x, g + 0.1, b.z, 0xd9b98a, 6); } continue; }
     b.y = g;
     for (const h of G.humans) if (h.state === 'ok' && hdist(h, b) < h.r + (b.big ? 0.8 : 0.4) && Math.abs(h.y - b.y) < 0.9) { openBox(b); break; }
@@ -1471,10 +1730,12 @@ function update(dt) {
       it.magnet = null;
       it.vy -= GRAVITY * dt;
       const nx = it.x + it.vx * dt, nz = it.z + it.vz * dt;
-      if (cellTop(nx, it.z) > it.y + 0.1) it.vx *= -0.4; else it.x = nx;
-      if (cellTop(it.x, nz) > it.y + 0.1) it.vz *= -0.4; else it.z = nz;
+      if (pointSolid(nx, it.y + 0.05, it.z)) it.vx *= -0.4; else it.x = nx;
+      if (pointSolid(it.x, it.y + 0.05, nz)) it.vz *= -0.4; else it.z = nz;
+      const py = it.y;
       it.y += it.vy * dt;
-      const g = Math.min(cellTop(it.x, it.z), 50);
+      if (it.vy > 0) { const c = ceilingAt(it.x, it.z, 0.05, py + 0.1); if (it.y + 0.1 > c) { it.y = c - 0.1; it.vy = 0; } }
+      const g = groundAt(it.x, it.z, 0.05, py);
       if (it.y <= g) { it.y = g; if (it.vy < -2.5) it.vy = -it.vy * 0.42; else it.vy = 0; it.vx *= 0.75; it.vz *= 0.75; it.spin *= 0.8; }
     }
     if (it.age < 0.4) continue;
@@ -1489,10 +1750,14 @@ function update(dt) {
 
   // --- 夜のルール ---
   if (G.phase === 'night') {
-    for (const o of activeOnis()) for (const h of G.humans)
+    for (const o of activeOnis()) if (!ONI[o.type].fly) for (const h of G.humans)
       if (h.state === 'ok' && hdist(o, h) < o.r + h.r + 0.1 && h.y < o.y + o.hgt && o.y < h.y + h.hgt) tryFreeze(o, h);
     for (const h of G.humans) {
-      if (h.state === 'frozen') {
+      if (h.state === 'frozen' && h.captor) { // UFOの中
+        h.x = h.captor.x; h.z = h.captor.z; h.y = h.captor.y + 0.2;
+        h.freezeTimer -= dt;
+        if (h.freezeTimer <= 0) { eliminate(h, '脱落…'); h.captor.captives = h.captor.captives.filter((c) => c !== h); h.captor = null; }
+      } else if (h.state === 'frozen') {
         const help = G.humans.some((a) => a !== h && a.state === 'ok' && hdist(a, h) < a.r + h.r + 0.35 && Math.abs(a.y - h.y) < 1.2);
         h.thaw = help ? h.thaw + dt : Math.max(0, h.thaw - dt * 0.5);
         if (h.thaw >= (h.thawNeed || THAW_TIME)) {
@@ -1506,8 +1771,8 @@ function update(dt) {
         if (h.freezeTimer <= 0) eliminate(h, '脱落…');
       } else if (h.state === 'ok') {
         // 高鬼: 同じ足場に乗り続けると揺れて崩れる
-        const i = cellOf(h), col = cols[i], top = col[col.length - 1];
-        if (h.onGround && top && top.type === 'scaffold' && Math.abs(h.y - heights[i]) < 0.05) {
+        const i = cellOf(h), top = cols[i].find((b) => Math.abs(b.y1 - h.y) < 0.05); // 足の下のブロック
+        if (h.onGround && top && top.type === 'scaffold') {
           if (h.standBlock === top) h.standTime += dt; else { h.standBlock = top; h.standTime = 0; }
           if (h.standTime >= SCAFFOLD_SAFE_TIME && top.crumble < 0) { top.crumble = SCAFFOLD_CRUMBLE_TIME; addFx(h.x, h.y + 2, h.z, '足場がグラグラ!', '#ffd34d'); }
         } else if (h.onGround) { h.standBlock = null; h.standTime = 0; }
@@ -1520,9 +1785,15 @@ function update(dt) {
   // --- ブロック ---
   for (const b of G.blocks.slice()) {
     b.shake = Math.max(0, b.shake - dt);
-    if (b.visY > b.base) { b.vy += GRAVITY * dt; b.visY = Math.max(b.base, b.visY - b.vy * dt); if (b.visY === b.base) b.vy = 0; }
-    if (b.crumble >= 0) { b.crumble -= dt; if (b.crumble <= 0) removeBlock(b); }
+    b.pop = Math.max(0, b.pop - dt);
+    if (b.crumble >= 0) { b.crumble -= dt; if (b.crumble <= 0) { removeBlock(b); settleBlocks(); } }
   }
+  // 支えを失って落ちていくブロック
+  for (const f of G.falling) {
+    f.t += dt; f.vy += GRAVITY * dt; f.mesh.position.y -= f.vy * dt; f.mesh.rotation.z += dt * 2;
+    if (f.t > 1.1 || f.mesh.position.y < 0.3) { world.remove(f.mesh); burst(f.mesh.position.x, Math.max(0.3, f.mesh.position.y), f.mesh.position.z, f.color, 8); f.done = true; }
+  }
+  G.falling = G.falling.filter((f) => !f.done);
 
   // --- 演出 ---
   for (const p of G.parts) { p.t += dt; p.vy -= GRAVITY * 0.5 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; }
@@ -1580,7 +1851,7 @@ function syncVisuals(time) {
     const m = h.mesh;
     if (h.state === 'out') { m.g.visible = false; continue; }
     // 鬼は自分の部屋に入って初めて、そこにいる人が見える
-    m.g.visible = !(G.player.kind === 'oni' && (G.phase !== 'night' || roomAt(Math.floor(h.x)) !== G.player.room));
+    m.g.visible = !h.captor && !(G.player.kind === 'oni' && (G.phase !== 'night' || roomAt(Math.floor(h.x)) !== G.player.room));
     m.g.position.set(h.x, h.y, h.z); m.g.rotation.y = h.yaw;
     m.ice.visible = h.state === 'frozen';
     m.stick.visible = h.swing > 0; m.stick.rotation.y = h.swing > 0 ? (h.swing / 0.3 - 0.5) * 2.4 : 0;
@@ -1597,6 +1868,11 @@ function syncVisuals(time) {
     const legs = m.g.userData.legs, sw = Math.sin(o.walkT * 3) * 0.5;
     if (legs) legs.forEach((l, k) => (l.rotation.x = (k % 2 ? sw : -sw) * (k > 1 ? -1 : 1)));
     m.stars.visible = o.stun > 0; m.stars.rotation.y = time / 200;
+    if (ONI[o.type].fly) {
+      m.parts.rotation.x = 0; m.parts.position.y = Math.sin(time / 300) * 0.08; m.parts.rotation.y = time / 900;
+      const beam = m.g.userData.beam, len = Math.max(0.5, o.y - groundAt(o.x, o.z, 0.1, o.y));
+      beam.visible = o.beamT > 0; beam.scale.set(1, len, 1); beam.position.y = -len / 2 + 0.2;
+    }
   }
   // 箱
   let k = 0;
@@ -1619,7 +1895,7 @@ function syncVisuals(time) {
   for (const b of G.blocks) {
     let ox = 0, oz = 0;
     if (b.shake > 0 || b.crumble >= 0) { const a = b.crumble >= 0 ? 0.07 : 0.05; ox = rand(-a, a); oz = rand(-a, a); }
-    b.mesh.position.set(cX(b.i) + ox, b.visY + b.h / 2, cZ(b.i) + oz);
+    b.mesh.position.set(cX(b.i) + ox, (b.type === 'roof' ? b.lv + 0.9 : b.lv + b.h / 2) + b.pop * 2, cZ(b.i) + oz);
     b.mesh.visible = !(G.player.kind === 'oni' && roomAt(b.i % N) !== G.player.room); // 鬼には他の部屋の建物は見えない
   }
   // 救援ランプ(点滅)
@@ -1632,18 +1908,6 @@ function syncVisuals(time) {
   }
   POOL.part.count = kp; POOL.part.instanceMatrix.needsUpdate = true; if (POOL.part.instanceColor) POOL.part.instanceColor.needsUpdate = true;
 
-  // 建築プレビュー
-  const p = G.player;
-  if (G.buildMode && p.kind === 'human' && p.state === 'ok') {
-    const i = frontCell(p), part = PARTS[p.buildType], ok = canPlace(i, p.buildType);
-    if (i >= 0) {
-      G3.preview.visible = true; G3.preview.geometry = part.h === 2 ? GEO.box2 : GEO.box1;
-      G3.preview.position.set(cX(i), (obst[i] ? 0 : heights[i]) + part.h / 2, cZ(i));
-      MAT.preview.color.set(ok ? 0x7CFC9A : 0xff5a5a);
-    } else G3.preview.visible = false;
-  } else G3.preview.visible = false;
-  $('bBuild').classList.toggle('on', !!G.buildMode);
-
   // カメラ(斜め後ろ上から追従)
   let focus = G.player;
   if (focus.kind === 'human' && focus.state === 'out') {
@@ -1651,16 +1915,42 @@ function syncVisuals(time) {
     focus = G.spectate;
   }
 
-  G.cam.lerp(_v.set(focus.x, focus.y + 1.2, focus.z), 0.15);
-  // 木や小屋にさえぎられたらカメラを近づける
-  let f = 1;
-  for (let k = 1; k <= 24; k++) {
-    const t = k / 24, px = G.cam.x + Math.sin(camYaw) * CAM_DIST * t, pz = G.cam.z + Math.cos(camYaw) * CAM_DIST * t, py = G.cam.y + CAM_HEIGHT * t;
-    if (obstHeightAt(px, pz) > py - 0.3) { f = Math.max(0.25, (k - 1.5) / 24); break; }
+  const fwx = -Math.sin(camYaw), fwz = -Math.cos(camYaw);
+  if (camMode === 'first') {
+    // 主観: キャラの目の高さ。自分の体は表示しない
+    const ey = eyeHeight(focus);
+    G.cam.set(focus.x, focus.y + ey, focus.z);
+    camera.position.copy(G.cam);
+    const cp = Math.cos(camPitch);
+    camera.lookAt(G.cam.x + fwx * cp, G.cam.y + Math.sin(camPitch), G.cam.z + fwz * cp);
+    focus.mesh.g.visible = false;
+    if (focus.kind === 'human' && focus.state === 'ok') focus.yaw = Math.atan2(fwx, fwz);
+    else if (focus.kind === 'oni' && focus.stun <= 0) focus.yaw = Math.atan2(fwx, fwz);
+  } else {
+    G.cam.lerp(_v.set(focus.x, focus.y + 1.2, focus.z), 0.15);
+    // 木や小屋にさえぎられたらカメラを近づける
+    let f = 1;
+    for (let k = 1; k <= 24; k++) {
+      const t = k / 24, px = G.cam.x + Math.sin(camYaw) * CAM_DIST * t, pz = G.cam.z + Math.cos(camYaw) * CAM_DIST * t, py = G.cam.y + CAM_HEIGHT * t;
+      if (obstHeightAt(px, pz) > py - 0.3) { f = Math.max(0.25, (k - 1.5) / 24); break; }
+    }
+    camDistK += (f - camDistK) * (f < camDistK ? 0.4 : 0.08);
+    camera.position.set(G.cam.x + Math.sin(camYaw) * CAM_DIST * camDistK, G.cam.y + CAM_HEIGHT * camDistK, G.cam.z + Math.cos(camYaw) * CAM_DIST * camDistK);
+    // 照準(画面中央)が自分の少し前の足元を指すように、少し前を見る
+    camera.lookAt(G.cam.x + fwx * 3, G.cam.y - 1.1, G.cam.z + fwz * 3);
   }
-  camDistK += (f - camDistK) * (f < camDistK ? 0.4 : 0.08);
-  camera.position.set(G.cam.x + Math.sin(camYaw) * CAM_DIST * camDistK, G.cam.y + CAM_HEIGHT * camDistK, G.cam.z + Math.cos(camYaw) * CAM_DIST * camDistK);
-  camera.lookAt(G.cam);
+  camera.updateMatrixWorld();
+
+  // 建築プレビュー(照準の先)
+  updateBuildTarget();
+  const bt = G.buildTarget;
+  if (bt) {
+    const part = PARTS[G.player.buildType];
+    G3.preview.visible = true; G3.preview.geometry = part.slab ? GEO.slab : part.h === 2 ? GEO.box2 : GEO.box1;
+    G3.preview.position.set(bt.x + 0.5, part.slab ? bt.lv + 0.9 : bt.lv + part.h / 2, bt.z + 0.5);
+    MAT.preview.color.set(bt.why ? 0xff5a5a : 0x7CFC9A);
+  } else G3.preview.visible = false;
+  $('bBuild').classList.toggle('on', !!(bt && !bt.why));
 
   // ランタンの光: カメラに近い人から順に割り当て
   if (nightK > 0) {
@@ -1674,12 +1964,16 @@ function syncVisuals(time) {
 }
 
 let camDistK = 1;
+function eyeHeight(e) {
+  if (e.kind === 'human') return 1.45;
+  return { carnivore: 0.95, monster: 2.45, alien: 0.75 }[e.type];
+}
 const OB_HEIGHT = { [OB_FENCE]: 1.2, [OB_ROCK]: 0.9, [OB_TREE]: 3.0, [OB_HUT]: 3.6, [OB_DIV]: 3.2, [OB_FWALL]: 2.6, [OB_TANK]: 2.2, [OB_GATE]: 2.4, 0: 0 };
 function obstHeightAt(x, z) {
   const fx = Math.floor(x), fz = Math.floor(z);
   if (!inField(fx, fz)) return 0;
   const i = idx(fx, fz);
-  return obst[i] ? OB_HEIGHT[obst[i]] : heights[i];
+  return obst[i] ? OB_HEIGHT[obst[i]] : topH[i];
 }
 
 // 頭上の表示(凍結タイマー・文字)
@@ -1727,8 +2021,8 @@ function drawMinimap(time) {
   }
   const oniView = G.player.kind === 'oni';
   if (oniView) for (const r of ROOMS) if (r.k !== G.player.room) { c.fillStyle = 'rgba(0,0,0,.7)'; c.fillRect(r.x0 * s, 0, (r.x1 - r.x0 + 1) * s, W); }
-  for (const b of G.blocks) if (b === cols[b.i][cols[b.i].length - 1] && !(oniView && roomAt(b.i % N) !== G.player.room)) {
-    c.fillStyle = b.type === 'wall' ? '#e2e6ea' : `hsl(30, 60%, ${35 + Math.min(heights[b.i], 6) * 6}%)`;
+  for (const b of G.blocks.slice().sort((a, b2) => a.y1 - b2.y1)) if (!(oniView && roomAt(b.i % N) !== G.player.room)) {
+    c.fillStyle = b.type === 'wall' ? '#e2e6ea' : b.type === 'roof' ? '#d0553f' : `hsl(30, 60%, ${35 + Math.min(topH[b.i], 6) * 6}%)`;
     c.fillRect((b.i % N) * s, ((b.i / N) | 0) * s, s, s);
   }
   const dot = (x, z, r, col) => { c.fillStyle = col; c.beginPath(); c.arc(x * s, z * s, r, 0, TAU); c.fill(); };
@@ -1766,7 +2060,11 @@ function setupHUD(hide) {
   document.querySelectorAll('.hud').forEach((el) => (el.style.display = show ? '' : 'none'));
   if (show) {
     $('topbar').style.display = 'flex'; $('status').style.display = 'flex'; $('minimap').style.display = 'block'; $('buttons').style.display = 'block'; $('joy').style.display = 'block';
-    const human = G.player.kind === 'human';
+    $('cross').style.display = 'block'; $('bView').style.display = 'flex';
+    const human = G.player.kind === 'human', ufo = !human && ONI[G.player.type].fly;
+    $('bJump').style.display = ufo ? 'none' : 'flex';
+    $('bUp').style.display = $('bDown').style.display = ufo ? 'flex' : 'none';
+    $('atkLabel').textContent = ufo ? 'ビーム' : 'タッチ/破壊';
     ['bPick', 'bBuild', 'bHit'].forEach((id) => ($(id).style.display = human ? 'flex' : 'none'));
     $('bAttack').style.display = human ? 'none' : 'flex';
     $('buttons').classList.toggle('oni', !human);
@@ -1785,7 +2083,7 @@ function updateHUD() {
     const st = p.state === 'out' ? '<span style="color:#ff8787">脱落・観戦中</span>'
              : p.state === 'frozen' ? `<span style="color:#9be7ff">凍結中 ❄${Math.ceil(p.freezeTimer)}</span>` : '';
     html = `<div class="row"><span class="wood">🪵 木材 ${p.wood}</span><span class="stone">🪨 石 ${p.stone}</span></div>
-      <div class="row">建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildMode ? ' <span style="color:#ffd34d">▶設置待ち</span>' : ''}</div>
+      <div class="row">建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildTarget ? (G.buildTarget.why ? ` <span style="color:#ff8a8a;font-size:11px">${G.buildTarget.why}</span>` : ' <span style="color:#7CFC9A">▶置ける</span>') : ''}</div>
       <div class="row"><span style="font-size:11px">スタミナ</span><div class="bar"><div style="width:${(p.stamina / STAMINA_MAX) * 100}%"></div></div></div>
       <div class="row" style="font-size:11px;color:#c8d3e6">高さ ${p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>
       <div class="row" style="font-size:11px">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ROOMS[p.room].name : '-'}${night && !G.rescueOpened && G.oniRooms.length < ROOM_COUNT ? `　通路が開くまで ${Math.max(0, Math.ceil(RESCUE_OPEN - G.nightT))}秒` : night && G.gatesOpen ? '　🚪通路オープン' : ''}</div>`;
@@ -1793,7 +2091,8 @@ function updateHUD() {
   } else {
     html = `<div class="row">${ONI[p.type].name}</div>
       <div class="row">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ' ' + ROOMS[p.room].name : '-'}${!p.entered ? ' <span style="color:#ffd34d">扉を開けている…</span>' : ''}</div>
-      <div class="row" style="font-size:11px;color:#ffd34d">強化: ${p.boost ? BOOSTS[p.boost].name : '-'}</div>`;
+      <div class="row" style="font-size:11px;color:#ffd34d">強化: ${p.boost ? BOOSTS[p.boost].name : '-'}</div>` +
+      (ONI[p.type].fly ? `<div class="row" style="font-size:11px;color:#9dff8a">高さ ${p.y.toFixed(1)}　ビーム ${p.beamCd > 0 ? Math.ceil(p.beamCd) + '秒' : 'OK'}　捕獲 ${p.captives.length}人${p.stun > 0 ? '　<span style="color:#ff8a8a">操作不能!</span>' : ''}</div>` : '');
   }
   const s = $('status'); if (s._h !== html) { s.innerHTML = html; s._h = html; }
 }
@@ -1833,6 +2132,7 @@ function renderWait() {
       <div class="wcol"><h3>1. 鬼の種類</h3>
         <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐺 肉食動物<span>足が速い。ジャンプは低い。高い場所の人にはタッチできない</span></button>
         <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 モンスター<span>遅いが壁・足場を1〜2回で壊す。高さ1まで届く</span></button>
+        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ(遅め)。真下の人をビームで吸い上げる。屋根の下には届かない</span></button>
       </div>
       <div class="wcol"><h3>2. ${split ? `部屋をえらぶ（定員${ONI_ROOM_CAP}匹）` : '部屋に投票'}</h3>
         ${ROOMS.map((r) => { const full = split && oniPop(r.k, p) >= ONI_ROOM_CAP;
@@ -1870,7 +2170,7 @@ $('wait').addEventListener('click', (e) => {
   if (k === 'vote' && splitMode() && oniPop(+v, p) >= ONI_ROOM_CAP) return;
   if (k === 'type') { // CPU鬼が同じ種類なら、もう一方の種類に変える
     setOniType(p, v); playerOniType = v;
-    for (const o of G.onis) if (o !== p && o.type === v) setOniType(o, v === 'carnivore' ? 'monster' : 'carnivore');
+    for (const o of G.onis) if (o !== p && o.type === v) { const others = ONI_TYPES.filter((t) => t !== v); setOniType(o, others[randInt(0, others.length - 1)]); }
   }
   else if (k === 'vote') p.vote = +v;
   else if (k === 'boost') p.boost = v;
