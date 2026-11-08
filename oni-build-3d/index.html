@@ -2664,12 +2664,12 @@ function showSide() {
 function renderWait() {
   const p = G.player;
   const split = splitMode();
-  const mates = G.onis.filter((o) => o !== p).map((o) => `CPU鬼: ${ONI[o.type].name}（${split ? ROOMS[o.vote].icon + ROOMS[o.vote].name + 'を選択' : '投票済み'}）`).join('<br>');
+  const mates = G.onis.filter((o) => o !== p).map((o) => `CPU鬼: ${ONI[o.type].name}（${ROOM_COUNT === 1 ? '準備OK' : split ? ROOMS[o.vote].icon + ROOMS[o.vote].name + 'を選択' : '投票済み'}）`).join('<br>');
   const sel = (on) => (on ? ' sel' : '');
   const toNight = G.phase === 'select' ? G.selectT + DAY_TIME : G.timeLeft;
   $('wait').innerHTML = `
     <div class="wtop"><h2>👹 鬼の待機ルーム</h2><div class="pill" id="waitTime">鬼ごっこまで ${fmtTime(toNight)}</div></div>
-    <p class="note">人たちは部屋に分かれて資材集め・建築中…（各部屋の人数も建築も鬼からは見えない）。鬼ごっこが始まったら選んだ部屋の扉から突入！</p>
+    <p class="note">${ROOM_COUNT === 1 ? '人たちはステージで資材集め・建築中…（建築のようすは鬼からは見えない）。鬼ごっこが始まったら扉から突入！' : '人たちは部屋に分かれて資材集め・建築中…（各部屋の人数も建築も鬼からは見えない）。鬼ごっこが始まったら選んだ部屋の扉から突入！'}</p>
     <div class="wcols">
       <div class="wcol"><h3>1. 鬼の種類</h3>
         <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐯 虎(肉食動物)<span>足が速い。高い場所の人にはタッチできない。正面の1ブロックを一撃で壊す</span></button>
