@@ -83,6 +83,8 @@
           border: 3px solid #ff3b3b; border-radius: 8px; box-shadow: 0 0 8px #ff3b3b; animation: lockSpin 1.2s linear infinite; z-index: 5; }
   #lock::after { content: 'LOCK'; position: absolute; left: 50%; top: -18px; transform: translateX(-50%) rotate(0); font-size: 10px; font-weight: 900; color: #ff6b6b; }
   @keyframes lockSpin { from { transform: rotate(0); } to { transform: rotate(90deg); } }
+  #bDig { width: 62px; height: 62px; right: 180px; bottom: 44px; background: #8a5a2e; }
+  #buttons.oni #bDig { right: 112px; bottom: 86px; }
   #bBuild .ring { position: absolute; inset: -7px; border-radius: 50%; border: 4px solid transparent; }
 
   /* ---------- 画面 ---------- */
@@ -163,6 +165,7 @@
   <div class="btn" id="bBuild">建てる<small id="buildLabel">足場</small><div class="ring" id="buildRing"></div></div>
   <div class="btn" id="bJump">ジャンプ</div>
   <div class="btn" id="bHit">叩く</div>
+  <div class="btn" id="bDig">掘る</div>
   <div class="btn" id="bAttack">攻撃<small id="atkLabel">タッチ/破壊</small></div>
   <div class="btn" id="bUp" style="display:none">▲上昇</div>
   <div class="btn" id="bDown" style="display:none">▼下降</div>
@@ -248,6 +251,11 @@ const HIGH_Y = 0.5;                  // この高さ以上が「高い場所」(
 const MONSTER_REACH = 1.05;          // モンスターがタッチできる高さ
 const THAW_TIME = 2, HIT_STUN = 2, HIT_COST = 35, STAMINA_MAX = 100, STAMINA_REGEN = 12, HIT_RANGE = 1.5;
 const ONI_ATTACK_RANGE = 1.3;
+// ---- 掘る(地下通路) ----
+const UG_FLOOR = -3.1, UG_CEIL = -0.3; // 地下通路の床と天井の高さ(天井の上は地表の土)
+const DIG_COOLDOWN = 0.4;            // 人が掘る間隔(秒)
+const DIG_COOLDOWN_ONI = 0.8;        // 鬼が掘る間隔(秒)
+const FIND_DIST = 3;                 // 鬼が地中でこの距離まで近づくと、地中の人を見つけられる
 const ONI_ATTACK_COOLDOWN = 1.5;     // 攻撃のあと次の攻撃ができるまでの秒数(赤鬼はこの1.5倍)
 const DUST_MAX = 20;                 // 同時に出せる土煙の数(スマホで重くならないように)
 const atkCooldown = (o) => ONI_ATTACK_COOLDOWN * (o.type === 'monster' ? 1.5 : 1);
@@ -306,7 +314,11 @@ const TERRAIN_NAME = { [OB_TREE]: '木', [OB_ROCK]: '岩', [OB_HUT]: '小屋', [
 let terrHP = new Float32Array(0), terrInst = new Map(), hutOf = new Int16Array(0);
 // heights: 地面から続くブロックの上面(歩ける高さ)  clearance: その上の空き(頭上の高さ)  topH: 一番上のブロックの上面
 let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), clearance = new Float32Array(N * N), topH = new Float32Array(N * N), cols = [], huts = [];
-let vox = [];                        // ボクセル: vox[lv*N*N + i] = そのマスを占めるブロック
+let vox = [];
+let dig = new Uint8Array(0);         // 0=土 1=地下通路(上に土がある) 2=穴(地表から開いている)
+const isUnder = (e) => e.y < -0.25;  // 地中にいるか
+// 地中の人は鬼から見えない(鬼も地中で近くまで掘り進めば見つかる)
+const visibleToOni = (h, o) => !isUnder(h) || (isUnder(o) && Math.hypot(h.x - o.x, h.z - o.z) <= FIND_DIST);                        // ボクセル: vox[lv*N*N + i] = そのマスを占めるブロック
 
 // 部屋は縦長の帯。部屋どうしの間は2列の仕切り壁で、通路は2か所
 const DIVW = 2;
@@ -347,7 +359,7 @@ function genField() {
     for (const [dx, dz] of DIRS4) { const j = idx(x + dx, z + dz); if (!obst[j] && !seen[j]) { seen[j] = 1; q.push(j); } }
   }
   for (let i = 0; i < N * N; i++) if (!obst[i] && !seen[i]) { const r = ROOMS[roomAt(i % N)]; obst[i] = r && r.terrain === 'factory' ? OB_FWALL : OB_ROCK; }
-  terrHP = new Float32Array(N * N); hutOf = new Int16Array(N * N).fill(-1); terrInst = new Map();
+  terrHP = new Float32Array(N * N); hutOf = new Int16Array(N * N).fill(-1); terrInst = new Map(); dig = new Uint8Array(N * N);
   for (let i = 0; i < N * N; i++) if (TERRAIN_HP[obst[i]]) terrHP[i] = TERRAIN_HP[obst[i]];
   huts.forEach((h, j) => { h.hp = TERRAIN_HP[OB_HUT]; for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) hutOf[idx(h.x + dx, h.z + dz)] = j; });
 }
@@ -411,21 +423,25 @@ function forCells(x, z, r, fn) {
 // 横移動の判定: 体の高さと重なるブロックがあれば止まる(足元から登れる段ならその上面を返す)
 function blockedTop(x, z, r, y, hgt = HUMAN_H) {
   let m = -Infinity;
+  const under = y < -0.25;
   forCells(x, z, r, (i) => {
     if (i < 0 || obst[i]) { m = Infinity; return; }
+    if (under) { if (!dig[i]) m = Infinity; return; } // 地中: 掘っていない土は壁
     for (const b of cols[i]) if (b.y1 > y + 0.02 && b.y0 < y + hgt - 0.02) m = Math.max(m, b.y0 <= y + 0.02 ? b.y1 : Infinity);
   });
   return m;
 }
 // 足元(高さy以下)で一番高いブロックの上面
 function groundAt(x, z, r, y = Infinity) {
-  let m = 0;
+  const fx = Math.floor(x), fz = Math.floor(z), d = inField(fx, fz) ? dig[idx(fx, fz)] : 0; // 体の中心が穴の上なら落ちる
+  let m = d === 2 || (d === 1 && y < UG_CEIL) ? UG_FLOOR : 0;
   forCells(x, z, r, (i) => { if (i < 0 || obst[i]) return; for (const b of cols[i]) if (b.y1 <= y + 0.05 && b.y1 > m) m = b.y1; });
   return m;
 }
 // 頭上(高さhead以上)で一番低いブロックの底
 function ceilingAt(x, z, r, head) {
-  let m = Infinity;
+  const fx = Math.floor(x), fz = Math.floor(z), d = inField(fx, fz) ? dig[idx(fx, fz)] : 0;
+  let m = d === 1 && head <= UG_CEIL + 0.05 ? UG_CEIL : Infinity; // 地下通路の天井
   forCells(x, z, r, (i) => { if (i < 0 || obst[i]) return; for (const b of cols[i]) if (b.y0 >= head - 0.05 && b.y0 < m) m = b.y0; });
   return m;
 }
@@ -440,7 +456,7 @@ const inRoomCell = (k) => (x) => roomAt(x) === k;
 function randomFreeCell(margin = 1, test) {
   for (let t = 0; t < 1000; t++) {
     const x = randInt(margin, N - 1 - margin), z = randInt(margin, N - 1 - margin), i = idx(x, z);
-    if (!obst[i] && heights[i] === 0 && clearance[i] > 2 && !isPassage(x, z) && (!test || test(x, z))) return i;
+    if (!obst[i] && !dig[i] && heights[i] === 0 && clearance[i] > 2 && !isPassage(x, z) && (!test || test(x, z))) return i;
   }
   return idx(N >> 1, N >> 1);
 }
@@ -453,7 +469,8 @@ function bfs(start, o) {
   bPrev.fill(-1);
   const lim = o.room === undefined ? -1 : o.room;
   const need = o.hgt || HUMAN_H;
-  const H = (i) => ((obst[i] && !(o.breakBlocks && TERRAIN_HP[obst[i]])) || (lim >= 0 && roomOfX[i % N] !== lim) || (!o.breakBlocks && clearance[i] < need) ? Infinity : o.breakBlocks ? 0 : heights[i]);
+  const H = o.ug ? (i) => (obst[i] || (lim >= 0 && roomOfX[i % N] !== lim) ? Infinity : dig[i] || o.allowDig ? 0 : Infinity) // 地下
+    : (i) => (dig[i] === 2 && i !== o.goal) ? Infinity : ((obst[i] && !(o.breakBlocks && TERRAIN_HP[obst[i]])) || (lim >= 0 && roomOfX[i % N] !== lim) || (!o.breakBlocks && clearance[i] < need) ? Infinity : o.breakBlocks ? 0 : heights[i]);
   const maxUp = (o.maxUp || 0) + 0.01, maxD = o.maxDepth || 9999;
   let head = 0, tail = 0; bQ[tail++] = start; bPrev[start] = start; bDepth[start] = 0;
   while (head < tail) {
@@ -599,6 +616,8 @@ function init3D() {
     for (let k = 0; k < 10; k++) { const x = k * s / 10; c.beginPath(); c.moveTo(x, 0); c.lineTo(x + 9, s * 0.45); c.lineTo(x + 3, s); c.lineTo(x - 2, s); c.lineTo(x + 4, s * 0.45); c.lineTo(x - 4, 0); c.fill(); }
   }) });
   MAT.dust = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.92, depthWrite: false }); // 多面体なので面ごとに陰がつく
+  MAT.dirt = lam(0x7a5233); MAT.dirtFloor = lam(0x5e3f26); MAT.hole = basic(0x1c130b);
+  GEO.holePlane = new THREE.PlaneGeometry(1, 1); GEO.holePlane.rotateX(-Math.PI / 2); // 上からだけ見える(下からは透明)
   GEO.dode = new THREE.DodecahedronGeometry(1, 0); GEO.ico = new THREE.IcosahedronGeometry(1, 0); GEO.cone5 = new THREE.ConeGeometry(1, 1, 5);
   GEO.disc = new THREE.CylinderGeometry(1, 1, 1, 8);
   MAT.ufo = lam(0xb8c2cc, { emissive: 0x141c26 }); MAT.ufoRim = basic(0x55ffcc, { fog: false });
@@ -725,6 +744,7 @@ function buildFieldMeshes() {
   }
 
   // 動くもの用のインスタンスプール
+  G3.ug = null;
   POOL.crate = makePool(GEO.crate, MAT.crate, 600);
   POOL.wood = makePool(GEO.wood, MAT.wood, 2500);
   POOL.stone = makePool(GEO.stone, MAT.stone, 2500);
@@ -1370,6 +1390,7 @@ function placeCheck(x, lv, z, type) {
   if (!inField(x, z)) return 'そこには置けない';
   const i = idx(x, z), p = PARTS[type];
   if (obst[i] || isPassage(x, z)) return 'そこには置けない';
+  if (lv === 0 && dig[i] === 2) return '穴の上には置けない';
   if (lv < 0 || lv + p.h > MAX_STACK) return '高すぎて置けない';
   for (let k = 0; k < p.h; k++) if (vox[vIdx(i, lv + k)]) return 'そこには置けない';
   if (lv === 0) for (const b of G.boxes) if (!b.opened && Math.floor(b.x) === x && Math.floor(b.z) === z) return '箱があって置けない';
@@ -1523,7 +1544,79 @@ function costText(type) { const p = PARTS[type], a = []; if (p.wood) a.push(`木
 // =====================================================================
 // アクション
 // =====================================================================
-function jump(e) { if (e.onGround && !(e.stun > 0) && e.state !== 'frozen') { e.vy = Math.sqrt(2 * GRAVITY * e.jumpH); e.onGround = false; } }
+function jump(e) {
+  if (!e.onGround || e.stun > 0 || e.state === 'frozen') return;
+  const inHole = isUnder(e) && dig[cellOf(e)] === 2; // 穴の底からは地上まで跳べる
+  e.vy = Math.sqrt(2 * GRAVITY * (inHole ? -UG_FLOOR + 0.5 : e.jumpH)); e.onGround = false;
+}
+// ---------------------------------------------------------------------
+// 掘る: 地表で掘ると穴、地中で横に掘ると地下通路
+// ---------------------------------------------------------------------
+function setDig(i, st) {
+  if (i < 0 || obst[i] || (st === 2 && cols[i].length)) return false;
+  if (dig[i] >= st) return false;
+  dig[i] = st;
+  burst(cX(i), st === 2 ? 0.1 : UG_FLOOR + 1, cZ(i), 0x7a5233, 12);
+  rebuildUnderground();
+  return true;
+}
+function doDig(e) {
+  if (e.kind === 'oni' && (ONI[e.type].fly || G.phase !== 'night' || !e.entered || e.stun > 0)) return false; // UFOは掘れない
+  if (e.kind === 'human' && e.state !== 'ok') return false;
+  if ((e.digCd || 0) > 0) return false;
+  const i = frontCell(e), under = isUnder(e);
+  const why = i < 0 || obst[i] || isPassage(i % N, (i / N) | 0) ? 'ここは掘れない'
+    : under ? (dig[i] ? 'もう掘ってある' : null)
+    : dig[i] === 2 ? 'もう穴がある' : cols[i].length ? '建物があって掘れない' : null;
+  if (why) { if (e.isPlayer) toast(why); return false; }
+  setDig(i, under ? 1 : 2);
+  e.digCd = e.kind === 'oni' ? DIG_COOLDOWN_ONI : DIG_COOLDOWN;
+  if (e.kind === 'oni') startAnim(e); else e.swing = 0.3;
+  return true;
+}
+const holeCells = () => { const a = []; for (let i = 0; i < N * N; i++) if (dig[i] === 2) a.push(i); return a; };
+function nearestHole(p, maxD = Infinity) {
+  let best = -1, bd = maxD;
+  for (const i of holeCells()) { const d = Math.hypot(cX(i) - p.x, cZ(i) - p.z); if (d < bd && roomAt(i % N) === roomAt(Math.floor(p.x))) { bd = d; best = i; } }
+  return best;
+}
+// 地下の経路(掘ってある所だけ。allowDig なら土も掘りながら進む)
+function seekUG(e, tx, tz, allowDig) {
+  const ai = e.ai, s = cellOf(e), g = idx(clamp(Math.floor(tx), 0, N - 1), clamp(Math.floor(tz), 0, N - 1));
+  ai.digNext = -1;
+  if (s === g) return dir2(tx - e.x, tz - e.z);
+  ai.ugT = (ai.ugT || 0) - 1;
+  if (ai.ugT <= 0 || ai.ugFrom !== s || ai.ugGoal !== g) {
+    ai.ugT = 15; ai.ugFrom = s; ai.ugGoal = g;
+    const r = bfs(s, { ug: true, allowDig, goal: g, room: restrictOf(e) });
+    ai.ugNext = r ? r.next : -1;
+  }
+  const n = ai.ugNext;
+  if (n < 0) return dir2(tx - e.x, tz - e.z);
+  if (!dig[n]) ai.digNext = n;
+  return n === g && dig[n] ? dir2(tx - e.x, tz - e.z) : dir2(cX(n) - e.x, cZ(n) - e.z);
+}
+function digAlong(o) { // 経路の先が土なら、向きを合わせて掘る
+  const n = o.ai.digNext;
+  if (n >= 0 && Math.hypot(cX(n) - o.x, cZ(n) - o.z) < 1.3) { o.yaw = Math.atan2(cX(n) - o.x, cZ(n) - o.z); doDig(o); }
+}
+// 地下の見た目(床・壁・天井と、地表の穴)
+function rebuildUnderground() {
+  if (G3.ug) world.remove(G3.ug);
+  const g = new THREE.Group(); G3.ug = g; world.add(g);
+  const cells = []; for (let i = 0; i < N * N; i++) if (dig[i]) cells.push(i);
+  if (!cells.length) return;
+  const mk = (geo, mat, list, fn) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, list.length)); list.forEach((v, k) => { fn(v); m.setMatrixAt(k, _m); }); m.count = list.length; m.frustumCulled = false; g.add(m); };
+  mk(GEO.small, MAT.dirtFloor, cells, (i) => _m.compose(_v.set(cX(i), UG_FLOOR - 0.05, cZ(i)), _q.identity(), _s.set(1, 0.1, 1)));
+  mk(GEO.small, MAT.dirt, cells.filter((i) => dig[i] === 1), (i) => _m.compose(_v.set(cX(i), UG_CEIL + 0.05, cZ(i)), _q.identity(), _s.set(1, 0.1, 1)));
+  const walls = [];
+  for (const i of cells) { const x = i % N, z = (i / N) | 0; for (const [dx, dz] of DIRS4) { const nx = x + dx, nz = z + dz; if (!inField(nx, nz) || !dig[idx(nx, nz)]) walls.push([i, dx, dz]); } }
+  mk(GEO.small, MAT.dirt, walls, ([i, dx, dz]) => {
+    const top = dig[i] === 2 ? -0.02 : UG_CEIL, h = top - UG_FLOOR;
+    _m.compose(_v.set(cX(i) + dx * 0.5, UG_FLOOR + h / 2, cZ(i) + dz * 0.5), _q.identity(), _s.set(dx ? 0.08 : 1, h, dz ? 0.08 : 1));
+  });
+  mk(GEO.holePlane, MAT.hole, cells.filter((i) => dig[i] === 2), (i) => _m.compose(_v.set(cX(i), 0.015, cZ(i)), _q.identity(), _s.set(1, 1, 1)));
+}
 
 function openBox(b) {
   if (b.opened || b.y > 0.01 + groundAt(b.x, b.z, 0.1, b.y)) return;
@@ -1579,7 +1672,7 @@ function coveredFromAbove(h, topY = 99) {
 function lockTarget(o) {
   let best = null, bd = Infinity;
   for (const h of G.humans) {
-    if (h.state !== 'ok' || roomAt(Math.floor(h.x)) !== o.room) continue;
+    if (h.state !== 'ok' || isUnder(h) || roomAt(Math.floor(h.x)) !== o.room) continue;
     const dx = h.x - o.x, dy = h.y + 0.9 - (o.y + 0.05), dz = h.z - o.z, l = Math.hypot(dx, dy, dz);
     if (l > BEAM_RANGE || dy / l > -BEAM_MIN_DOWN + 0.02) continue; // 斜め下にいる人だけ
     let clear = true;
@@ -1769,6 +1862,7 @@ bindButton($('bPick'), () => canAct() && doPick(G.player));
 bindButton($('bHit'), () => canAct() && doHit(G.player));
 bindButton($('bJump'), () => playing() && G.player.state !== 'out' && jump(G.player));
 bindButton($('bAttack'), () => { input.beamHold = true; if (playing() && G.player.kind === 'oni' && G.player.entered) doOniAttack(G.player); }, () => (input.beamHold = false));
+bindButton($('bDig'), () => playing() && G.phase !== 'select' && doDig(G.player));
 bindButton($('bUp'), () => (input.up = true), () => (input.up = false));
 bindButton($('bDown'), () => (input.down = true), () => (input.down = false));
 bindButton($('bView'), () => toggleView());
@@ -1792,7 +1886,7 @@ function pressBuild() {
 function updateBuildTarget() {
   const p = G.player;
   G.buildTarget = null;
-  if (p.kind !== 'human' || p.state !== 'ok' || G.phase === 'select') return;
+  if (p.kind !== 'human' || p.state !== 'ok' || G.phase === 'select' || isUnder(p)) return;
   camera.getWorldDirection(_v);
   const d = { x: _v.x, y: _v.y, z: _v.z }, o = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
   const eye = { x: p.x, y: p.y + 1.45, z: p.z };
@@ -1816,6 +1910,7 @@ window.addEventListener('keydown', (e) => {
   if (!playing() || e.repeat) return;
   if (e.code === 'Space' && G.phase !== 'select' && !(G.player.kind === 'oni' && G.phase !== 'night')) jump(G.player);
   if (e.code === 'KeyV') toggleView();
+  if (e.code === 'KeyG' && G.phase !== 'select') doDig(G.player);
   if (G.player.kind === 'human') {
     if (e.code === 'KeyJ') canAct() && doPick(G.player);
     if (e.code === 'KeyK') pressBuild();
@@ -1850,6 +1945,10 @@ function roomOK(e, x) {
   return r < 0 || (roomAt(Math.floor(x - e.r)) === r && roomAt(Math.floor(x + e.r - 1e-6)) === r);
 }
 function moveBody(e, dx, dz) {
+  const er = e.r; if (isUnder(e)) e.r = Math.min(e.r, 0.3); // 地中は細い通路なので体を小さく扱う
+  moveBodyInner(e, dx, dz); e.r = er;
+}
+function moveBodyInner(e, dx, dz) {
   e.blocked = -Infinity;
   const steps = Math.ceil(Math.max(Math.abs(dx), Math.abs(dz)) / 0.2) || 1;
   for (let s = 0; s < steps; s++) {
@@ -1960,6 +2059,19 @@ function planShelter(h) {
 }
 // 屋根の下で、頭がつかえないマス(UFOの斜め上からのビームを防ぎやすい場所)
 const isCoverCell = (i) => !obst[i] && clearance[i] >= HUMAN_H && clearance[i] < 6 && !isCrumbling(i);
+// 隠れ家: 穴を1つ掘り、そこから地下通路を3マス伸ばす
+function planHideout(h) {
+  if (h.y > 0.05) return;
+  const cx = Math.floor(h.x), cz = Math.floor(h.z);
+  const ok = (x, z) => inField(x, z) && !obst[idx(x, z)] && !dig[idx(x, z)] && !cols[idx(x, z)].length && roomAt(x) === h.room && !isPassage(x, z);
+  for (const [dx, dz] of shuffle(DIRS4.slice())) {
+    const cells = []; for (let k = 1; k <= 4; k++) cells.push([cx + dx * k, cz + dz * k]);
+    if (!cells.every(([x, z]) => ok(x, z))) continue;
+    h.ai.queue = cells.map(([x, z], k) => ({ x, z, type: k === 0 ? 'hole' : 'tunnel' }));
+    h.ai.hideout = true;
+    return;
+  }
+}
 function humanAI(h, dt) {
   const ai = h.ai;
   ai.buildT -= dt; ai.hitCd -= dt; ai.banT -= dt; ai.wanderT -= dt;
@@ -1969,12 +2081,15 @@ function humanAI(h, dt) {
       if (ai.buildT <= 0) {
         ai.buildT = 0.35;
         const q = ai.queue[0];
-        if (Math.hypot(q.x + 0.5 - h.x, q.z + 0.5 - h.z) < 4.5 && placeBlockAt(h, q.x, q.lv, q.z, q.type, true)) ai.queue.shift(); else ai.queue = [];
+        const near = Math.hypot(q.x + 0.5 - h.x, q.z + 0.5 - h.z) < 4.5;
+        const ok = q.type === 'hole' || q.type === 'tunnel' ? near && setDig(idx(q.x, q.z), q.type === 'hole' ? 2 : 1) : near && placeBlockAt(h, q.x, q.lv, q.z, q.type, true);
+        if (ok) ai.queue.shift(); else ai.queue = [];
       }
     } else {
       if (ai.buildT <= 0) {
         ai.buildT = rand(2, 4);
-        if (h.wood >= 6 && ai.towers < 2) planStair(h);
+        if (!ai.hideout && Math.random() < 0.5) planHideout(h);
+        else if (h.wood >= 6 && ai.towers < 2) planStair(h);
         else if (h.stone >= PARTS.wall.stone + PARTS.roof.stone && h.wood >= PARTS.roof.wood && (ai.shelters || 0) < 2) planShelter(h);
       }
       const mine = (p) => roomAt(Math.floor(p.x)) === h.room;
@@ -1989,6 +2104,19 @@ function humanAI(h, dt) {
     const onis = activeOnis().filter((o) => sameRoom(o, h)); // 見えるのは同じ部屋の鬼だけ
     let near = null, nd = Infinity;
     for (const o of onis) { const d = hdist(o, h) * (o.stun > 0 ? 1.8 : 1); if (d < nd) { nd = d; near = o; } }
+    if (isUnder(h)) { // 地中: 鬼が掘って近づいてきたら、遠い穴から地上へ逃げる。そうでなければ通路の奥で隠れる
+      const ug = onis.filter((o) => isUnder(o) && o.stun <= 0 && hdist(o, h) < 6);
+      if (ug.length) {
+        let hole = -1, hd = -1;
+        for (const i of holeCells()) { const d = Math.hypot(cX(i) - ug[0].x, cZ(i) - ug[0].z); if (d > hd) { hd = d; hole = i; } }
+        if (hole >= 0) { if (cellOf(h) === hole) jump(h); else mv = seekUG(h, cX(hole), cZ(hole), false); }
+        if (h.stamina >= HIT_COST && ai.hitCd <= 0 && canHit(h, ug[0])) { h.yaw = Math.atan2(ug[0].x - h.x, ug[0].z - h.z); doHit(h); ai.hitCd = 1.2; }
+      } else if (dig[cellOf(h)] === 2) { // 穴の真下にいると見つかりやすいので通路へ
+        const x = Math.floor(h.x), z = Math.floor(h.z);
+        for (const [dx, dz] of DIRS4) if (inField(x + dx, z + dz) && dig[idx(x + dx, z + dz)] === 1) { mv = dir2(x + dx + 0.5 - h.x, z + dz + 0.5 - h.z); break; }
+      }
+      h.mv = mv; return;
+    }
     const here = cellOf(h);
     if (h.standTime > 3.5) { ai.banCell = here; ai.banT = 6; }
     const threats = onis.filter((o) => o.stun <= 0 && hdist(o, h) < 9);
@@ -2020,6 +2148,8 @@ function humanAI(h, dt) {
         r = seekPred(h, 'high', (i) => heights[i] >= 1 && !obst[i] && !isCrumbling(i) && !(ai.banT > 0 && i === ai.banCell), 1, 12);
       else if (ONI[near.type].fly && !coveredFromAbove(h)) // UFOからは屋根の下へ逃げこむ
         r = seekPred(h, 'cover', isCoverCell, 1, 16);
+      const hole = nearestHole(h, 10); // 近くに穴があれば地中へ潜る(どの鬼からも見えなくなる)
+      if (hole >= 0 && nd > 1.5) r = { dir: seekPoint(h, cX(hole), cZ(hole), 1, false) };
       mv = r ? r.dir : fleeDir(h);
       if (near.stun <= 0 && h.stamina >= HIT_COST && ai.hitCd <= 0 && canHit(h, near)) {
         h.yaw = Math.atan2(near.x - h.x, near.z - h.z); doHit(h); ai.hitCd = 1.2;
@@ -2039,7 +2169,7 @@ function ufoAI(o) {
   let mv = { x: 0, z: 0 };
   o.beamHold = false;
   if (o.stun > 0) { o.mv = mv; return; }
-  const t = nearest(G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room), o);
+  const t = nearest(G.humans.filter((h) => h.state === 'ok' && !isUnder(h) && roomAt(Math.floor(h.x)) === o.room), o); // 地中にはビームが届かない
   if (t) {
     const d = hdist(t, o), want = 3.5;
     const to = dir2(t.x - o.x, t.z - o.z);
@@ -2063,7 +2193,27 @@ function oniAI(o, dt) {
   let mv = { x: 0, z: 0 };
   if (o.stun > 0) { o.mv = mv; return; }
   {
-    const ok = G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room); // 自分の部屋の人だけ
+    const okAll = G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room); // 自分の部屋の人だけ
+    const ok = okAll.filter((h) => visibleToOni(h, o));           // 地中の人は見えない
+    const hidden = okAll.filter((h) => isUnder(h));
+    if (isUnder(o)) { // 地中: 見つけた人、いなければ地中の人の方へ掘り進む。誰もいなければ穴から地上へ
+      const t = nearest(ok.filter(isUnder), o) || nearest(hidden, o);
+      if (t) {
+        mv = seekUG(o, t.x, t.z, true); digAlong(o);
+        if (visibleToOni(t, o) && hdist(t, o) < ONI_ATTACK_RANGE + o.r) { o.yaw = Math.atan2(t.x - o.x, t.z - o.z); doOniAttack(o); }
+      } else {
+        const hole = nearestHole(o);
+        if (hole >= 0) { if (cellOf(o) === hole) jump(o); else { mv = seekUG(o, cX(hole), cZ(hole), true); digAlong(o); } }
+      }
+      o.mv = mv; return;
+    }
+    if (!ok.length && hidden.length) { // 地上に誰もいない → 隠れた人の近くの穴へ入る。穴がなければ真上で掘る
+      const hid = nearest(hidden, o), hole = nearestHole(hid, 8);
+      if (hole >= 0) mv = seekPoint(o, cX(hole), cZ(hole), 0, true);
+      else if (hdist(o, hid) > 1.3) mv = seekPoint(o, hid.x, hid.z, 0, true);
+      else { o.yaw = Math.atan2(hid.x - o.x, hid.z - o.z); doDig(o); }
+      o.mv = mv; return;
+    }
     let target = nearest(ok, o, (h) => canTouch(o, h)), waiting = false;
     if (!target) { target = nearest(ok, o); waiting = true; }
     if (!target) {
@@ -2139,7 +2289,7 @@ function update(dt) {
   for (const h of G.humans) {
     if (h.state === 'out') continue;
     h.stamina = Math.min(STAMINA_MAX, h.stamina + STAMINA_REGEN * dt);
-    h.swing = Math.max(0, h.swing - dt); h.safeFx -= dt;
+    h.swing = Math.max(0, h.swing - dt); h.safeFx -= dt; h.digCd = Math.max(0, (h.digCd || 0) - dt);
     if (h.state === 'ok') {
       if (h.isPlayer) h.mv = playerMove(); else { h.ai.pathT -= dt; h.ai.qT -= dt; humanAI(h, dt); }
       const m = Math.min(1, Math.hypot(h.mv.x, h.mv.z));
@@ -2153,7 +2303,7 @@ function update(dt) {
   for (const o of G.onis) {
     if (G.phase !== 'night') continue; // 昼は待機ルーム
     if (!o.entered) { o.enterT -= dt; if (o.enterT <= 0) oniEnters(o); else continue; }
-    o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt);
+    o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt); o.digCd = Math.max(0, (o.digCd || 0) - dt);
     if (o.anim && o.anim.t < o.anim.dur) {
       o.anim.t += dt;
       const a = o.anim, p = a.t / a.dur;
@@ -2337,7 +2487,7 @@ function syncVisuals(time) {
     const m = h.mesh;
     if (h.state === 'out') { m.g.visible = false; continue; }
     // 鬼は自分の部屋に入って初めて、そこにいる人が見える
-    m.g.visible = !h.captor && !(G.player.kind === 'oni' && (G.phase !== 'night' || roomAt(Math.floor(h.x)) !== G.player.room));
+    m.g.visible = !h.captor && !(G.player.kind === 'oni' && (G.phase !== 'night' || roomAt(Math.floor(h.x)) !== G.player.room || !visibleToOni(h, G.player)));
     m.g.position.set(h.x, h.y, h.z); m.g.rotation.y = h.yaw;
     m.ice.visible = h.state === 'frozen';
     m.stick.visible = h.swing > 0;
@@ -2428,7 +2578,7 @@ function syncVisuals(time) {
   }
 
   const fwx = -Math.sin(camYaw), fwz = -Math.cos(camYaw);
-  if (camMode === 'first') {
+  if (camMode === 'first' || isUnder(focus)) { // 地中ではいつも主観
     // 主観: キャラの目の高さ。自分の体は表示しない
     const ey = eyeHeight(focus);
     G.cam.set(focus.x, focus.y + ey, focus.z);
@@ -2511,8 +2661,17 @@ function updateLabels() {
   const lp = lk ? project(lk.x, lk.y + 0.9, lk.z) : null;
   if (lp) { lockEl.style.display = 'block'; lockEl.style.left = lp.x + 'px'; lockEl.style.top = lp.y + 'px'; } else lockEl.style.display = 'none';
   const focus = G.player.state === 'out' && G.spectate ? G.spectate : G.player;
+  // 地中にいる人には、土ごしに鬼の位置を表示
+  const marks = pl.kind === 'human' && isUnder(focus) && G.phase === 'night';
+  for (const o of G.onis) {
+    if (!o.markEl || !o.markEl.isConnected) { o.markEl = document.createElement('div'); o.markEl.className = 'lbl'; o.markEl.style.color = '#ff4d4d'; $('labels').appendChild(o.markEl); }
+    const mp = marks && o.entered ? project(o.x, o.y + o.hgt + 0.5, o.z) : null;
+    if (!mp) { o.markEl.style.display = 'none'; continue; }
+    o.markEl.style.display = 'block'; o.markEl.textContent = `👹 ${Math.round(hdist(o, focus))}m${isUnder(o) ? '(地中)' : ''}`;
+    o.markEl.style.transform = `translate(${mp.x}px, ${mp.y}px) translate(-50%, -100%)`;
+  }
   for (const h of G.humans) {
-    if (h.state !== 'frozen' || hdist(h, focus) > (G.phase === 'night' ? 16 : 40)) { h.label.style.display = 'none'; continue; }
+    if (h.state !== 'frozen' || hdist(h, focus) > (G.phase === 'night' ? 16 : 40) || (G.player.kind === 'oni' && !visibleToOni(h, G.player))) { h.label.style.display = 'none'; continue; }
     const p = project(h.x, h.y + 2.2, h.z);
     if (!p) { h.label.style.display = 'none'; continue; }
     h.label.style.display = 'block';
@@ -2559,7 +2718,8 @@ function drawMinimap(time) {
   }
   if (G.chest && Math.sin(time / 150) > -0.3) dot(G.chest.x, G.chest.z, 4 * u, '#ffd34d');
   if (G.rain) { c.strokeStyle = '#ffd34d'; c.lineWidth = 1.5 * u; c.beginPath(); c.arc(G.rain.x * s, G.rain.z * s, G.rain.r * s, 0, TAU); c.stroke(); }
-  for (const h of G.humans) if (h.state !== 'out' && !(oniView && roomAt(Math.floor(h.x)) !== G.player.room))
+  for (let i = 0; i < N * N; i++) if (dig[i] && (dig[i] === 2 || !oniView)) { c.fillStyle = dig[i] === 2 ? '#1c130b' : '#a0703f'; c.fillRect((i % N) * s, ((i / N) | 0) * s, s, s); } // 穴(全員)・地下通路(人だけ)
+  for (const h of G.humans) if (h.state !== 'out' && !(oniView && (roomAt(Math.floor(h.x)) !== G.player.room || !visibleToOni(h, G.player))))
     dot(h.x, h.z, (h.isPlayer ? 3.2 : 2.4) * u, h.state === 'frozen' ? '#bdefff' : h.isPlayer ? '#fff' : '#4d9bff');
   if (G.phase === 'night') for (const o of G.onis) if (o.entered && (oniView || sameRoom(o, focusOf()))) dot(o.x, o.z, (o.isPlayer ? 3.4 : 2.8) * u, o.isPlayer ? '#fff' : '#ff3b3b');
   // 救援ランプ
@@ -2590,6 +2750,7 @@ function setupHUD(hide) {
     $('cross').style.display = 'block'; $('bView').style.display = 'flex';
     const human = G.player.kind === 'human', ufo = !human && ONI[G.player.type].fly;
     $('bJump').style.display = ufo ? 'none' : 'flex';
+    $('bDig').style.display = ufo ? 'none' : 'flex';
     $('bUp').style.display = $('bDown').style.display = ufo ? 'flex' : 'none';
     $('atkLabel').textContent = ufo ? '凍結ビーム' : 'タッチ/破壊';
     ['bPick', 'bBuild', 'bHit'].forEach((id) => ($(id).style.display = human ? 'flex' : 'none'));
@@ -2612,7 +2773,7 @@ function updateHUD() {
     html = `<div class="row"><span class="wood">🪵 木材 ${p.wood}</span><span class="stone">🪨 石 ${p.stone}</span></div>
       <div class="row">建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildTarget ? (G.buildTarget.why ? ` <span style="color:#ff8a8a;font-size:11px">${G.buildTarget.why}</span>` : ' <span style="color:#7CFC9A">▶置ける</span>') : ''}</div>
       <div class="row"><span style="font-size:11px">スタミナ</span><div class="bar"><div style="width:${(p.stamina / STAMINA_MAX) * 100}%"></div></div></div>
-      <div class="row" style="font-size:11px;color:#c8d3e6">高さ ${p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>
+      <div class="row" style="font-size:11px;color:#c8d3e6">${isUnder(p) ? '🕳 地中' : '高さ ' + p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>
       <div class="row" style="font-size:11px">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ROOMS[p.room].name : '-'}${night && !G.rescueOpened && G.oniRooms.length < ROOM_COUNT ? `　通路が開くまで ${Math.max(0, Math.ceil(RESCUE_OPEN - G.nightT))}秒` : night && G.gatesOpen ? '　🚪通路オープン' : ''}</div>`;
     $('buildLabel').textContent = PARTS[p.buildType].name;
   } else {
