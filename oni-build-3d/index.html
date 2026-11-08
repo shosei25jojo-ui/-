@@ -2441,13 +2441,7 @@ function syncVisuals(time) {
   } else {
     G.cam.lerp(_v.set(focus.x, focus.y + 1.2, focus.z), 0.15);
     const ufoCam = focus.kind === 'oni' && ONI[focus.type].fly, CH = ufoCam ? 0.8 : CAM_HEIGHT; // UFOはカメラを低めに
-    // 木や小屋にさえぎられたらカメラを近づける
-    let f = 1;
-    for (let k = 1; k <= 24; k++) {
-      const t = k / 24, px = G.cam.x + Math.sin(camYaw) * CAM_DIST * t, pz = G.cam.z + Math.cos(camYaw) * CAM_DIST * t, py = G.cam.y + CH * t;
-      if (obstHeightAt(px, pz) > py - 0.3) { f = Math.max(0.25, (k - 1.5) / 24); break; }
-    }
-    camDistK += (f - camDistK) * (f < camDistK ? 0.4 : 0.08);
+    camDistK = 1; // 木や建物にさえぎられてもズームせず、いつも引きのまま
     camera.position.set(G.cam.x + Math.sin(camYaw) * CAM_DIST * camDistK, G.cam.y + CH * camDistK, G.cam.z + Math.cos(camYaw) * CAM_DIST * camDistK);
     // 照準(画面中央)が自分の少し前の足元を指すように、少し前を見る
     if (ufoCam) camera.lookAt(G.cam.x + fwx * 6, focus.y - 5, G.cam.z + fwz * 6); // UFOは斜め前下を照準(UFOは照準の上に見える)
