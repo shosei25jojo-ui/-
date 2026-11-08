@@ -232,10 +232,11 @@ const GRAVITY = 22;
 const HUMAN_SPEED = 4.2, HUMAN_JUMP = 1.3;  // ジャンプの高さ1.3 → 1段だけ登れる
 const HUMAN_R = 0.3, HUMAN_H = 1.6;
 const ONI = {
-  carnivore: { name: '🐺 肉食動物', speed: 4.9, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
-  monster:   { name: '👹 モンスター', speed: 3.2, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
-  alien:     { name: '🛸 宇宙人',     speed: 2.7, jump: 0,    r: 1.0,  h: 0.9, dmg: 0, fly: true },
+  carnivore: { name: '🐺 肉食動物', speed: 5.0, jump: 0.55, r: 0.42, h: 1.1, dmg: 1 },
+  monster:   { name: '👹 モンスター', speed: 3.3, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
+  alien:     { name: '🛸 宇宙人',     speed: 2.8, jump: 0,    r: 1.0,  h: 0.9, dmg: 0, fly: true },
 };
+const ONI_SPEED_MUL = 1.25;          // 鬼全体の移動速度の倍率(全員まとめて速くする)
 const HIGH_Y = 0.5;                  // この高さ以上が「高い場所」(高鬼のセーフ)
 const MONSTER_REACH = 1.05;          // モンスターがタッチできる高さ
 const THAW_TIME = 2, HIT_STUN = 2, HIT_COST = 35, STAMINA_MAX = 100, STAMINA_REGEN = 12, HIT_RANGE = 1.5;
@@ -483,7 +484,8 @@ function seekPred(e, key, pred, maxUp, maxDepth) {
 // =====================================================================
 // Three.js 準備
 // =====================================================================
-let renderer, scene, camera, hemi, sun, world, lanternLights = [];
+let renderer, scene, camera, hemi, sun, world, lanternLights = [], oniLights = [];
+const MAX_ONI_LIGHTS = 2;
 const GEO = {}, MAT = {};
 const _v = new THREE.Vector3(), _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _c = new THREE.Color(), _e = new THREE.Euler();
 
@@ -507,6 +509,9 @@ function init3D() {
   camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 160);
   hemi = new THREE.HemisphereLight(0xe4f3ff, 0x5a7a4a, 0.9); scene.add(hemi);
   sun = new THREE.DirectionalLight(0xffffff, 0.7); sun.position.set(20, 40, 12); scene.add(sun);
+  for (let i = 0; i < MAX_ONI_LIGHTS; i++) { // 鬼の目・UFOのライト(実際に照らすのは近い鬼だけ)
+    const l = new THREE.SpotLight(0xfff0c8, 0, 16, 0.42, 0.6, 1); scene.add(l); scene.add(l.target); oniLights.push(l);
+  }
   for (let i = 0; i < MAX_LANTERN_LIGHTS; i++) { // 数を固定して、シェーダの作り直しを防ぐ
     const l = new THREE.PointLight(0xffb45c, 0, 11, 1.2); scene.add(l); lanternLights.push(l);
   }
@@ -558,6 +563,13 @@ function init3D() {
   MAT.ufo = lam(0xb8c2cc, { emissive: 0x141c26 }); MAT.ufoRim = basic(0x55ffcc, { fog: false });
   MAT.dome = lam(0x88e0ff, { transparent: true, opacity: 0.55, emissive: 0x113344, depthWrite: false });
   MAT.alienSkin = lam(0x7be36b);
+  // 光の帯(見た目用。霧を無視して遠くからでも見える)
+  MAT.eyeBeam = basic(0xffe6a0, { transparent: true, opacity: 0.14, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, side: THREE.DoubleSide });
+  MAT.ufoLight = basic(0xd8f4ff, { transparent: true, opacity: 0.1, depthWrite: false, blending: THREE.AdditiveBlending, fog: false, side: THREE.DoubleSide });
+  MAT.ufoSpot = basic(0xd8f4ff, { transparent: true, opacity: 0.28, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+  GEO.eyeCone = new THREE.ConeGeometry(0.75, 5, 14, 1, true); GEO.eyeCone.rotateX(-Math.PI / 2); GEO.eyeCone.translate(0, 0, 2.5); // 先端が目、前に広がる
+  GEO.ufoCone = new THREE.CylinderGeometry(0.55, 2.3, 1, 22, 1, true); GEO.ufoCone.translate(0, -0.5, 0);                  // 上端がUFO、下へ広がる
+  GEO.ufoDisc = new THREE.CircleGeometry(2.3, 28); GEO.ufoDisc.rotateX(-Math.PI / 2);
   MAT.ufoBeam = basic(0x9dff8a, { transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, fog: false });
   MAT.scaffold = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
     c.fillStyle = '#8a5a2b'; c.fillRect(0, 0, s, s);
@@ -724,6 +736,8 @@ function makeOniMesh(type) {
     for (const [lx, lz] of [[-0.19, 0.36], [0.19, 0.36], [-0.19, -0.36], [0.19, -0.36]]) legs.push(addBox(parts, MAT.carnDark, 0.14, 0.42, 0.14, lx, 0.21, lz));
     const tail = addBox(parts, MAT.carnDark, 0.1, 0.1, 0.5, 0, 0.8, -0.68); tail.rotation.x = -0.5;
     addSphere(parts, MAT.eye, 0.065, -0.12, 0.94, 0.86); addSphere(parts, MAT.eye, 0.065, 0.12, 0.94, 0.86);
+    const eyeLight = new THREE.Mesh(GEO.eyeCone, MAT.eyeBeam); eyeLight.position.set(0, 0.94, 0.88); eyeLight.rotation.x = 0.18; parts.add(eyeLight);
+    g.userData.eyePos = [0, 0.94, 0.88]; g.userData.eyeTilt = 0.18;
     g.userData.legs = legs;
   } else if (type === 'alien') { // UFOに乗った宇宙人
     const saucer = new THREE.Mesh(GEO.sphere, MAT.ufo); saucer.scale.set(1.3, 0.3, 1.3); saucer.position.y = 0.3; parts.add(saucer);
@@ -732,6 +746,9 @@ function makeOniMesh(type) {
     addSphere(parts, MAT.eye, 0.07, -0.1, 0.78, 0.22); addSphere(parts, MAT.eye, 0.07, 0.1, 0.78, 0.22);
     const dome = new THREE.Mesh(GEO.sphere, MAT.dome); dome.scale.set(0.62, 0.55, 0.62); dome.position.y = 0.55; parts.add(dome);
     for (let k = 0; k < 6; k++) { const a = (k / 6) * TAU; addSphere(parts, MAT.eye, 0.08, Math.cos(a) * 0.95, 0.12, Math.sin(a) * 0.95); }
+    const searchCone = new THREE.Mesh(GEO.ufoCone, MAT.ufoLight); g.add(searchCone);
+    const searchDisc = new THREE.Mesh(GEO.ufoDisc, MAT.ufoSpot); g.add(searchDisc);
+    g.userData.searchCone = searchCone; g.userData.searchDisc = searchDisc;
     const beamMat = MAT.ufoBeam.clone();
     const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.45, BEAM_RADIUS, 1, 18, 1, true), beamMat); beam.visible = false; g.add(beam);
     g.userData.beam = beam; g.userData.beamMat = beamMat;
@@ -743,6 +760,8 @@ function makeOniMesh(type) {
     for (const sx of [-1, 1]) { const h = new THREE.Mesh(GEO.cone, MAT.horn); h.scale.set(0.12, 0.42, 0.12); h.position.set(sx * 0.27, 2.95, 0.02); h.rotation.z = -sx * 0.3; parts.add(h); }
     addBox(parts, MAT.dark, 0.5, 0.1, 0.05, 0, 2.24, 0.39);
     addSphere(parts, MAT.eye, 0.085, -0.18, 2.52, 0.38); addSphere(parts, MAT.eye, 0.085, 0.18, 2.52, 0.38);
+    const eyeLight = new THREE.Mesh(GEO.eyeCone, MAT.eyeBeam); eyeLight.position.set(0, 2.52, 0.4); eyeLight.rotation.x = 0.38; parts.add(eyeLight);
+    g.userData.eyePos = [0, 2.52, 0.4]; g.userData.eyeTilt = 0.38;
     g.userData.legs = legs; g.userData.arms = arms;
   }
   const stars = makeStars(ONI[type].h + 0.35); g.add(stars);
@@ -1205,7 +1224,7 @@ function doBeam(o, quiet) {
   const exposed = below.filter((h) => !coveredFromAbove(h, o.y));
   for (const h of below) if (!exposed.includes(h) && h.safeFx <= 0) { addFx(h.x, h.y + 2, h.z, '屋根でガード!', '#7CFC9A'); h.safeFx = 1; }
   if (!exposed.length) {
-    if (o.isPlayer && !quiet) toast(below.length ? '屋根にさえぎられた！ ビームを当て続けて屋根を壊そう' : blockBelow(o) ? 'ビームを当て続けると建物を壊せる' : '真下に人がいない');
+    if (o.isPlayer && !quiet && below.length) toast('屋根にさえぎられた！ ビームを当て続けて屋根を壊そう');
     return false;
   }
   if (o.beamCd > 0) { if (o.isPlayer && !quiet) toast(`吸い上げビーム充電中 あと${Math.ceil(o.beamCd)}秒`); return false; }
@@ -1759,11 +1778,13 @@ function update(dt) {
     if (!o.entered) { o.enterT -= dt; if (o.enterT <= 0) oniEnters(o); else continue; }
     o.stun = Math.max(0, o.stun - dt); o.atkCd -= dt; o.freezeCd -= dt; o.swing = Math.max(0, o.swing - dt);
     if (o.isPlayer) o.mv = o.stun > 0 ? { x: 0, z: 0 } : playerMove(); else { o.ai.pathT -= dt; o.ai.qT -= dt; oniAI(o, dt); }
-    const sp = ONI[o.type].speed * (o.speedMul || 1);
+    const sp = ONI[o.type].speed * ONI_SPEED_MUL * (o.speedMul || 1);
     const m = Math.hypot(o.mv.x, o.mv.z);
     if (ONI[o.type].fly) { // UFO
       o.beamCd = Math.max(0, o.beamCd - dt); o.beamT = Math.max(0, o.beamT - dt);
-      updateBreakBeam(o, o.isPlayer ? input.beamHold || input.keys.KeyJ : o.beamHold, dt);
+      const hold = o.isPlayer ? input.beamHold || input.keys.KeyJ : o.beamHold;
+      o.beamOn = !!hold && o.stun <= 0 && o.entered; // ボタンを押している間はビームが出る
+      updateBreakBeam(o, hold, dt);
       if (o.stun <= 0) {
         if (o.isPlayer) o.y += ((input.up || input.keys.KeyR ? 1 : 0) - (input.down || input.keys.KeyF ? 1 : 0)) * 3 * dt;
         else o.y += clamp(o.altTarget - o.y, -2 * dt, 2 * dt);
@@ -1939,8 +1960,11 @@ function syncVisuals(time) {
     if (ONI[o.type].fly) {
       m.parts.rotation.x = 0; m.parts.position.y = Math.sin(time / 300) * 0.08; m.parts.rotation.y = time / 900;
       const beam = m.g.userData.beam, len = Math.max(0.5, o.y - groundAt(o.x, o.z, 0.1, o.y));
-      beam.visible = o.beamT > 0 || !!o.breakTarget; beam.scale.set(1, len, 1); beam.position.y = -len / 2 + 0.2;
-      m.g.userData.beamMat.color.set(o.beamT > 0 ? 0x9dff8a : 0xff9a3c); // 吸い上げ=緑 / 破壊=オレンジ
+      beam.visible = o.beamT > 0 || o.beamOn; beam.scale.set(1, len, 1); beam.position.y = -len / 2 + 0.2;
+      m.g.userData.beamMat.color.set(o.beamT > 0 ? 0x9dff8a : o.breakTarget ? 0xff9a3c : 0x7fe8ff); // 吸い上げ=緑 / 破壊=オレンジ / 空振り=水色
+      // 常についているサーチライト
+      m.g.userData.searchCone.scale.set(1, len, 1); m.g.userData.searchCone.position.y = 0.2;
+      m.g.userData.searchDisc.position.y = -len + 0.25;
     }
   }
   // 箱
@@ -2021,6 +2045,21 @@ function syncVisuals(time) {
   } else G3.preview.visible = false;
   $('bBuild').classList.toggle('on', !!(bt && !bt.why));
 
+  // 鬼のライト: 見えている鬼のうちカメラに近い順にスポットライトを割り当て
+  const lit = G.phase === 'night' ? G.onis.filter((o) => o.entered && (o.mesh.g.visible || o === focus)).sort((a, b) => hdist(a, focus) - hdist(b, focus)) : [];
+  oniLights.forEach((l, k2) => {
+    const o = lit[k2];
+    if (!o) { l.intensity = 0; return; }
+    l.intensity = 2.6 * nightK;
+    if (ONI[o.type].fly) { l.position.set(o.x, o.y, o.z); l.target.position.set(o.x, 0, o.z); l.angle = 0.42; l.distance = UFO_MAX_HEIGHT + 6; }
+    else {
+      const ep = o.mesh.g.userData.eyePos, fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
+      l.position.set(o.x + fx * ep[2], o.y + ep[1], o.z + fz * ep[2]);
+      l.target.position.set(l.position.x + fx * 6, l.position.y - 6 * Math.tan(o.mesh.g.userData.eyeTilt), l.position.z + fz * 6);
+      l.angle = 0.38; l.distance = 14;
+    }
+    l.target.updateMatrixWorld();
+  });
   // ランタンの光: カメラに近い人から順に割り当て
   if (nightK > 0) {
     const list = G.humans.filter((h) => h.state !== 'out').sort((a, b) => hdist(a, focus) - hdist(b, focus));
