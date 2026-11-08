@@ -236,13 +236,15 @@ const ONI = {
   monster:   { name: '👹 モンスター', speed: 3.3, jump: 0.5,  r: 0.55, h: 2.7, dmg: 5 },
   alien:     { name: '🛸 宇宙人',     speed: 2.8, jump: 0,    r: 1.0,  h: 0.9, dmg: 0, fly: true },
 };
-const ONI_SPEED_MUL = 1.25;          // 鬼全体の移動速度の倍率(全員まとめて速くする)
+const ONI_SPEED_MUL = 1.5;           // 鬼全体の移動速度の倍率(全員まとめて速くする)
 const HIGH_Y = 0.5;                  // この高さ以上が「高い場所」(高鬼のセーフ)
 const MONSTER_REACH = 1.05;          // モンスターがタッチできる高さ
 const THAW_TIME = 2, HIT_STUN = 2, HIT_COST = 35, STAMINA_MAX = 100, STAMINA_REGEN = 12, HIT_RANGE = 1.5;
 const ONI_ATTACK_RANGE = 1.3, ONI_ATTACK_CD = 0.6;
 // ---- 宇宙人(UFO) ----
-const BEAM_COOLDOWN = 10;            // ビーム(吸い上げ)のクールタイム(秒)
+const BEAM_RATE = 0.15;              // 凍結ビームの連射間隔(秒)。押している間ずっと撃つ
+const BEAM_RANGE = 16;               // ビームの届く距離
+const BEAM_MIN_DOWN = 0.3;           // ビームは必ず斜め下へ(下向き成分の最小値)
 const BEAM_BREAK_TIME = 1;           // ビームを当て続けて建物を壊す時間(1マスあたり秒。壁は2マスなので2秒)
 const UFO_MIN_HEIGHT = 4, UFO_MAX_HEIGHT = 10;
 const BEAM_RADIUS = 1.3;             // UFOの真下とみなす範囲
@@ -570,6 +572,8 @@ function init3D() {
   GEO.eyeCone = new THREE.ConeGeometry(0.75, 5, 14, 1, true); GEO.eyeCone.rotateX(-Math.PI / 2); GEO.eyeCone.translate(0, 0, 2.5); // 先端が目、前に広がる
   GEO.ufoCone = new THREE.CylinderGeometry(0.55, 2.3, 1, 22, 1, true); GEO.ufoCone.translate(0, -0.5, 0);                  // 上端がUFO、下へ広がる
   GEO.ufoDisc = new THREE.CircleGeometry(2.3, 28); GEO.ufoDisc.rotateX(-Math.PI / 2);
+  MAT.bolt = basic(0x9ff3ff, { transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+  GEO.bolt = new THREE.CylinderGeometry(0.12, 0.12, 1, 8, 1, true); GEO.bolt.translate(0, 0.5, 0);
   MAT.ufoBeam = basic(0x9dff8a, { transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, fog: false });
   MAT.scaffold = lam(0xffffff, { map: makeCanvasTex(64, (c, s) => {
     c.fillStyle = '#8a5a2b'; c.fillRect(0, 0, s, s);
@@ -791,7 +795,7 @@ function makeOni(i, type, isPlayer, x, z) {
   const d = ONI[type];
   return { kind: 'oni', id: i, type, isPlayer, x, z, y: 0, vy: 0, onGround: true, yaw: Math.PI, r: d.r, hgt: d.h, jumpH: d.jump,
            stun: 0, atkCd: 0, freezeCd: 0, swing: 0, mv: { x: 0, z: 0 }, ai: newAI(), mesh: makeOniMesh(type), walkT: 0,
-           room: -1, vote: null, boost: null, entered: false, enterT: 0, captives: [], beamCd: 0, beamT: 0, altTarget: UFO_MIN_HEIGHT + 1, beamHold: false, breakT: 0, breakTarget: null };
+           room: -1, vote: null, boost: null, entered: false, enterT: 0, captives: [], beamCd: 0, beamT: 0, altTarget: UFO_MIN_HEIGHT + 1, beamHold: false, breakT: 0, breakTarget: null, fireT: 0, aimDir: null };
 }
 function newAI() {
   return { pathT: 0, pFrom: -1, pGoal: -1, pNext: -1, pBreak: false, qT: 0, qKey: '', qFrom: -1, q: null,
@@ -818,7 +822,7 @@ function startGame() {
   $('labels').innerHTML = '';
   G = { phase: 'select', round: 1, timeLeft: 0, selectT: 0, dayElapsed: 0, nextEvent: EVENT_INTERVAL, nightT: 0,
         humans: [], onis: [], boxes: [], items: [], fruits: [], blocks: [], parts: [], fx: [], chest: null, rain: null,
-        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null,
+        player: null, spectate: null, buildMode: false, buildIdle: 0, oniRooms: [], gatesOpen: false, rescueOpened: false, warned: {}, falling: [], buildTarget: null, bolts: [],
         stats: { freezes: 0, thaws: 0, hits: 0, built: 0, rescues: 0 }, cam: new THREE.Vector3() };
   for (let i = 0; i < HUMAN_COUNT; i++) G.humans.push(makeHuman(i, playerSide === 'human' && i === 0, ROOMS[0].home.x + 0.5, ROOMS[0].home.z + 0.5));
   const cpuTypes = shuffle(ONI_TYPES.filter((t) => playerSide !== 'oni' || t !== playerOniType));
@@ -1188,8 +1192,7 @@ function doHit(h) {
     if (!canHit(h, o)) continue;
     hit = true;
     if (ONI[o.type].fly) { // UFOを叩くと閉じ込められた人が全員出てきて、UFOは操作不能に
-      const n = releaseCaptives(o); o.stun = UFO_STUN;
-      addFx(o.x, o.y + 1.2, o.z, n ? `ゴンッ! ${n}人を救出!` : 'ゴンッ!', '#ffe066');
+      o.stun = UFO_STUN; addFx(o.x, o.y + 1.2, o.z, 'ゴンッ!', '#ffe066');
     } else { o.stun = HIT_STUN; addFx(o.x, o.y + o.hgt + 0.3, o.z, 'ゴンッ!', '#ffe066'); }
     burst(o.x, o.y + o.hgt * 0.6, o.z, 0xffe066, 10);
   }
@@ -1209,61 +1212,64 @@ function coveredFromAbove(h, topY = 99) {
   forCells(h.x, h.z, 0.05, (i) => { if (i >= 0) for (const b of cols[i]) if (b.y0 >= h.y + 0.5 && b.y0 < topY) cov = true; });
   return cov;
 }
-// UFOの真下(中心のマス)で一番上にあるブロック
-function blockBelow(o) {
-  const fx = Math.floor(o.x), fz = Math.floor(o.z);
-  if (!inField(fx, fz)) return null;
-  let best = null;
-  for (const b of cols[idx(fx, fz)]) if (b.y1 <= o.y + 0.01 && (!best || b.y1 > best.y1)) best = b;
-  return best;
-}
-// 吸い上げビーム(タップ): 真下の屋根の下にいない人を吸い上げる。クールタイムは吸い上げたときだけ
-function doBeam(o, quiet) {
-  if (o.stun > 0) return false;
-  const below = G.humans.filter((h) => h.state === 'ok' && hdist(h, o) <= BEAM_RADIUS && h.y < o.y);
-  const exposed = below.filter((h) => !coveredFromAbove(h, o.y));
-  for (const h of below) if (!exposed.includes(h) && h.safeFx <= 0) { addFx(h.x, h.y + 2, h.z, '屋根でガード!', '#7CFC9A'); h.safeFx = 1; }
-  if (!exposed.length) {
-    if (o.isPlayer && !quiet && below.length) toast('屋根にさえぎられた！ ビームを当て続けて屋根を壊そう');
-    return false;
+// 凍結ビーム: UFOから斜め下へ撃つ。人に当たれば凍結、建物に当たれば削る(1マス1秒ぶん当てると壊れる)
+function beamDir(o) {
+  let d;
+  if (o.isPlayer) { // 照準(画面中央)の先に当たる地点へ向けて撃つ
+    camera.getWorldDirection(_v);
+    const c = camera.position; let t = 0;
+    for (; t < 40; t += 0.25) {
+      const x = c.x + _v.x * t, y = c.y + _v.y * t, z = c.z + _v.z * t;
+      if (t > 1 && (y <= 0 || aimSolid(x, y, z))) break;
+    }
+    d = { x: c.x + _v.x * t - o.x, y: c.y + _v.y * t - (o.y + 0.05), z: c.z + _v.z * t - o.z };
   }
-  if (o.beamCd > 0) { if (o.isPlayer && !quiet) toast(`吸い上げビーム充電中 あと${Math.ceil(o.beamCd)}秒`); return false; }
-  o.beamCd = BEAM_COOLDOWN; o.beamT = 0.8;
-  for (const h of exposed) capture(o, h);
-  return true;
-}
-// 破壊ビーム(当て続ける): 真下のブロックを1マス1秒で壊す
-function updateBreakBeam(o, hold, dt) {
-  const b = hold && o.stun <= 0 && G.phase === 'night' && o.entered ? blockBelow(o) : null;
-  if (!b) { o.breakT = 0; o.breakTarget = null; return; }
-  if (o.breakTarget !== b) { o.breakTarget = b; o.breakT = 0; }
-  o.breakT += dt; b.shake = 0.12;
-  if (Math.random() < dt * 12) burst(cX(b.i), b.y1, cZ(b.i), 0xff9a3c, 2);
-  if (o.breakT >= b.h * BEAM_BREAK_TIME) {
-    addFx(cX(b.i), b.y1 + 0.3, cZ(b.i), 'ジュッ!', '#ff9a3c');
-    removeBlock(b); settleBlocks();
-    o.breakT = 0; o.breakTarget = null;
+  else d = o.aimDir || { x: Math.sin(o.yaw) * 0.7, y: -0.7, z: Math.cos(o.yaw) * 0.7 };
+  if (d.y > -BEAM_MIN_DOWN) { // 真横や上には撃てない(斜め下に補正)
+    const hl = Math.hypot(d.x, d.z) || 1, k = Math.sqrt(1 - BEAM_MIN_DOWN * BEAM_MIN_DOWN) / hl;
+    d = { x: d.x * k, y: -BEAM_MIN_DOWN, z: d.z * k };
   }
+  const l = Math.hypot(d.x, d.y, d.z); return { x: d.x / l, y: d.y / l, z: d.z / l };
 }
-function capture(o, h) {
+// 照準の当たり判定(木や岩は実際の高さまで)
+function aimSolid(x, y, z) {
+  const fx = Math.floor(x), fz = Math.floor(z);
+  if (!inField(fx, fz)) return true;
+  const i = idx(fx, fz);
+  if (obst[i]) return y < (OB_HEIGHT[obst[i]] || 3);
+  return cols[i].some((b) => y >= b.y0 && y < b.y1);
+}
+function fireBolt(o) {
+  if (o.stun > 0 || !o.entered || G.phase !== 'night') return;
+  const d = beamDir(o), ox = o.x, oy = o.y + 0.05, oz = o.z;
+  let t = 0, hitH = null, hitB = null;
+  for (; t < BEAM_RANGE; t += 0.12) {
+    const x = ox + d.x * t, y = oy + d.y * t, z = oz + d.z * t;
+    if (y <= 0) break;
+    hitH = G.humans.find((h) => h.state === 'ok' && Math.hypot(h.x - x, h.z - z) < h.r + 0.2 && y >= h.y && y <= h.y + h.hgt);
+    if (hitH) break;
+    const fx = Math.floor(x), fz = Math.floor(z);
+    if (!inField(fx, fz)) break;
+    const i = idx(fx, fz);
+    if (obst[i]) { if (y < (OB_HEIGHT[obst[i]] || 3)) break; else continue; }
+    hitB = cols[i].find((b) => y >= b.y0 && y < b.y1);
+    if (hitB) break;
+  }
+  G.bolts.push({ x: ox, y: oy, z: oz, d, len: Math.max(0.3, t), t: 0 });
+  const ex = ox + d.x * t, ey = oy + d.y * t, ez = oz + d.z * t;
+  if (hitH) freezeByBeam(o, hitH);
+  else if (hitB) {
+    hitB.beamDmg = (hitB.beamDmg || 0) + BEAM_RATE; hitB.shake = 0.12;
+    burst(ex, ey, ez, 0x9ff3ff, 2);
+    if (hitB.beamDmg >= hitB.h * BEAM_BREAK_TIME - 1e-6) { addFx(cX(hitB.i), hitB.y1 + 0.3, cZ(hitB.i), 'パキン!', '#9ff3ff'); removeBlock(hitB); settleBlocks(); }
+  } else burst(ex, Math.max(0.05, ey), ez, 0x9ff3ff, 1);
+}
+function freezeByBeam(o, h) {
   if (h.freezeCount >= MAX_FREEZE_COUNT) { eliminate(h, '即脱落!'); return; }
-  h.freezeCount++; h.state = 'frozen'; h.captor = o; h.freezeTimer = FREEZE_LIMIT; h.thaw = 0; G.stats.freezes++;
-  o.captives.push(h);
-  addFx(h.x, h.y + 2, h.z, '吸い込まれた!', '#9dff8a'); burst(h.x, h.y + 1, h.z, 0x9dff8a, 16);
-  if (h.isPlayer) toast('UFOに閉じこめられた！ 仲間がUFOを叩けば出られる');
-}
-function releaseCaptives(o) {
-  const list = o.captives.filter((h) => h.state === 'frozen' && h.captor === o);
-  const spots = list.length ? spotsNear({ x: Math.floor(o.x), z: Math.floor(o.z) }, list.length) : [];
-  list.forEach((h, j) => {
-    const i = spots[j % Math.max(1, spots.length)];
-    h.state = 'ok'; h.captor = null; h.thaw = 0; G.stats.thaws++;
-    if (i !== undefined) { h.x = cX(i); h.z = cZ(i); }
-    h.y = Math.max(h.y, groundAt(h.x, h.z, h.r, o.y) + 0.1); h.vy = 0;
-    if (h.isPlayer) toast('UFOから脱出した！');
-  });
-  o.captives = [];
-  return list.length;
+  h.freezeCount++; h.state = 'frozen'; h.freezeTimer = FREEZE_LIMIT; h.thaw = 0; G.stats.freezes++;
+  h.thawNeed = THAW_TIME * (o.thawMul || 1);
+  addFx(h.x, h.y + 2.1, h.z, '凍結ビーム!', '#9ff3ff'); burst(h.x, h.y + 1, h.z, 0xc9f3ff, 16);
+  if (h.isPlayer) toast(`凍結ビームで凍った！ 仲間に${h.thawNeed}秒触れてもらうと解凍`);
 }
 function canTouch(o, h) {
   if (ONI[o.type].fly) return false;                    // UFOはタッチしない(ビームで吸い上げる)
@@ -1290,7 +1296,7 @@ function eliminate(h, text) {
   if (h.isPlayer) { telop('あなたは脱落… 仲間を観戦中'); G.buildMode = false; }
 }
 function doOniAttack(o) {
-  if (ONI[o.type].fly) { if (G.phase === 'night') doBeam(o); return; }
+  if (ONI[o.type].fly) { if (o.fireT <= 0) { fireBolt(o); o.fireT = BEAM_RATE; } return; }
   if (o.atkCd > 0 || o.stun > 0) return;
   o.atkCd = ONI_ATTACK_CD; o.swing = 0.3;
   const fx = Math.sin(o.yaw), fz = Math.cos(o.yaw);
@@ -1578,7 +1584,7 @@ function planShelter(h) {
     return;
   }
 }
-// 屋根の下で、頭がつかえないマス(UFOから隠れられる場所)
+// 屋根の下で、頭がつかえないマス(UFOの斜め上からのビームを防ぎやすい場所)
 const isCoverCell = (i) => !obst[i] && clearance[i] >= HUMAN_H && clearance[i] < 6 && !isCrumbling(i);
 function humanAI(h, dt) {
   const ai = h.ai;
@@ -1621,8 +1627,8 @@ function humanAI(h, dt) {
     const ally = nearest(G.humans, h, (a) => a.state === 'frozen' && !a.captor && (rescuer ? true : hdist(a, h) < 14 && sameRoom(a, h)) && minOni(a) > (rescuer ? 8 : 7));
     const away = roomAt(Math.floor(h.x)) !== h.room; // 救援で他の部屋に来ている
     // 仲間を閉じ込めたUFOがビームの充電中なら、下にもぐってジャンプして叩く
-    const ufo = activeOnis().find((o) => ONI[o.type].fly && o.captives.length && o.beamCd > 1.5 && o.stun <= 0 && sameRoom(o, h) && hdist(o, h) < 8);
-    if (ufo && h.stamina >= HIT_COST) {
+    const ufo = activeOnis().find((o) => ONI[o.type].fly && o.stun <= 0 && sameRoom(o, h) && hdist(o, h) < 2.2 && o.y < UFO_MIN_HEIGHT + 0.5);
+    if (ufo && h.stamina >= HIT_COST) { // 低く飛んでいるUFOはジャンプして叩く
       const d = hdist(ufo, h);
       mv = d > 0.8 ? seekPoint(h, ufo.x, ufo.z, 1, false) : { x: 0, z: 0 };
       if (d < 2.2 && h.onGround) jump(h);
@@ -1653,26 +1659,23 @@ function humanAI(h, dt) {
   if (ai.unstickT > 0) { ai.unstickT -= dt; mv = { x: Math.sin(ai.unstickA), z: Math.cos(ai.unstickA) }; }
   h.mv = mv;
 }
-// UFO: 屋根の下にいない人の真上へ飛んでいき、ビームで吸い上げる
+// UFO: 少し離れた斜め上から、人を狙って凍結ビームを連射する(屋根や壁に当たれば削って壊す)
 function ufoAI(o) {
   const ai = o.ai; ai.wanderT -= 1 / 60;
   let mv = { x: 0, z: 0 };
-  if (o.stun > 0) { o.mv = mv; return; }
-  const inRoom = G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room);
-  let t = nearest(inRoom, o, (h) => !coveredFromAbove(h)), breaking = false;
-  if (!t) { t = nearest(inRoom, o); breaking = true; } // 全員が屋根の下 → 屋根をビームで壊す
   o.beamHold = false;
+  if (o.stun > 0) { o.mv = mv; return; }
+  const t = nearest(G.humans.filter((h) => h.state === 'ok' && roomAt(Math.floor(h.x)) === o.room), o);
   if (t) {
-    const d = hdist(t, o);
-    if (d > 0.35) mv = dir2(t.x - o.x, t.z - o.z);
-    if (!breaking) {
-      o.altTarget = clamp(t.y + (t.y > 1.5 ? 5.5 : 4.2), UFO_MIN_HEIGHT, UFO_MAX_HEIGHT); // 高い所の人には叩かれないよう高めに
-      if (d < 0.9 && o.beamCd <= 0) doBeam(o, true);
-    } else {
-      const top = topH[cellOf(t)];
-      o.altTarget = clamp(top + 2.5, UFO_MIN_HEIGHT, UFO_MAX_HEIGHT);
-      if (d < 0.6 && o.y >= top - 0.05) o.beamHold = true;
-    }
+    const d = hdist(t, o), want = 3.5;
+    const to = dir2(t.x - o.x, t.z - o.z);
+    if (d > want + 1) mv = to; else if (d < want - 1) mv = { x: -to.x, z: -to.z };
+    else mv = { x: -to.z * 0.4, z: to.x * 0.4 }; // まわりこみながら撃つ
+    o.yaw = Math.atan2(to.x, to.z);
+    o.altTarget = clamp(t.y + 4.5, UFO_MIN_HEIGHT, UFO_MAX_HEIGHT);
+    const aim = { x: t.x - o.x, y: t.y + 0.9 - o.y, z: t.z - o.z }, l = Math.hypot(aim.x, aim.y, aim.z) || 1;
+    o.aimDir = { x: aim.x / l, y: aim.y / l, z: aim.z / l };
+    o.beamHold = d < 10;
   } else {
     if (ai.wander < 0 || ai.wanderT <= 0 || hdist(o, { x: cX(ai.wander), z: cZ(ai.wander) }) < 1) { ai.wander = randomFreeCell(2, inRoomCell(o.room)); ai.wanderT = rand(4, 8); }
     mv = dir2(cX(ai.wander) - o.x, cZ(ai.wander) - o.z); mv.x *= 0.6; mv.z *= 0.6;
@@ -1781,10 +1784,9 @@ function update(dt) {
     const sp = ONI[o.type].speed * ONI_SPEED_MUL * (o.speedMul || 1);
     const m = Math.hypot(o.mv.x, o.mv.z);
     if (ONI[o.type].fly) { // UFO
-      o.beamCd = Math.max(0, o.beamCd - dt); o.beamT = Math.max(0, o.beamT - dt);
       const hold = o.isPlayer ? input.beamHold || input.keys.KeyJ : o.beamHold;
-      o.beamOn = !!hold && o.stun <= 0 && o.entered; // ボタンを押している間はビームが出る
-      updateBreakBeam(o, hold, dt);
+      o.fireT -= dt;
+      if (hold && o.fireT <= 0) { fireBolt(o); o.fireT = BEAM_RATE; } // 押している間は連射
       if (o.stun <= 0) {
         if (o.isPlayer) o.y += ((input.up || input.keys.KeyR ? 1 : 0) - (input.down || input.keys.KeyF ? 1 : 0)) * 3 * dt;
         else o.y += clamp(o.altTarget - o.y, -2 * dt, 2 * dt);
@@ -1877,6 +1879,7 @@ function update(dt) {
     b.pop = Math.max(0, b.pop - dt);
     if (b.crumble >= 0) { b.crumble -= dt; if (b.crumble <= 0) { removeBlock(b); settleBlocks(); } }
   }
+  for (const bo of G.bolts) bo.t += dt;
   // 支えを失って落ちていくブロック
   for (const f of G.falling) {
     f.t += dt; f.vy += GRAVITY * dt; f.mesh.position.y -= f.vy * dt; f.mesh.rotation.z += dt * 2;
@@ -1960,8 +1963,7 @@ function syncVisuals(time) {
     if (ONI[o.type].fly) {
       m.parts.rotation.x = 0; m.parts.position.y = Math.sin(time / 300) * 0.08; m.parts.rotation.y = time / 900;
       const beam = m.g.userData.beam, len = Math.max(0.5, o.y - groundAt(o.x, o.z, 0.1, o.y));
-      beam.visible = o.beamT > 0 || o.beamOn; beam.scale.set(1, len, 1); beam.position.y = -len / 2 + 0.2;
-      m.g.userData.beamMat.color.set(o.beamT > 0 ? 0x9dff8a : o.breakTarget ? 0xff9a3c : 0x7fe8ff); // 吸い上げ=緑 / 破壊=オレンジ / 空振り=水色
+      beam.visible = false;
       // 常についているサーチライト
       m.g.userData.searchCone.scale.set(1, len, 1); m.g.userData.searchCone.position.y = 0.2;
       m.g.userData.searchDisc.position.y = -len + 0.25;
@@ -1991,6 +1993,17 @@ function syncVisuals(time) {
     b.mesh.position.set(cX(b.i) + ox, (b.type === 'roof' ? b.lv + 0.9 : b.lv + b.h / 2) + b.pop * 2, cZ(b.i) + oz);
     b.mesh.visible = !(G.player.kind === 'oni' && roomAt(b.i % N) !== G.player.room); // 鬼には他の部屋の建物は見えない
   }
+  // 凍結ビームの光線
+  if (!G3.boltPool) G3.boltPool = [];
+  G.bolts = G.bolts.filter((bo) => bo.t < 0.14);
+  G.bolts.forEach((bo, k) => {
+    let m = G3.boltPool[k];
+    if (!m) { m = new THREE.Mesh(GEO.bolt, MAT.bolt); world.add(m); G3.boltPool[k] = m; }
+    if (m.parent !== world) world.add(m);
+    m.visible = true; m.position.set(bo.x, bo.y, bo.z);
+    m.quaternion.setFromUnitVectors(_s.set(0, 1, 0), _v.set(bo.d.x, bo.d.y, bo.d.z)); m.scale.set(1, bo.len, 1);
+  });
+  for (let k = G.bolts.length; k < G3.boltPool.length; k++) G3.boltPool[k].visible = false;
   // 救援ランプ(点滅)
   if (G3.lamps) G3.lamps.forEach((L) => L.mat.color.set(L.on ? (Math.sin(time / 140) > 0 ? 0xff2020 : 0x8a0e0e) : 0x3a2222));
   // パーティクル
@@ -2021,16 +2034,18 @@ function syncVisuals(time) {
     else if (focus.kind === 'oni' && focus.stun <= 0) focus.yaw = Math.atan2(fwx, fwz);
   } else {
     G.cam.lerp(_v.set(focus.x, focus.y + 1.2, focus.z), 0.15);
+    const ufoCam = focus.kind === 'oni' && ONI[focus.type].fly, CH = ufoCam ? 0.8 : CAM_HEIGHT; // UFOはカメラを低めに
     // 木や小屋にさえぎられたらカメラを近づける
     let f = 1;
     for (let k = 1; k <= 24; k++) {
-      const t = k / 24, px = G.cam.x + Math.sin(camYaw) * CAM_DIST * t, pz = G.cam.z + Math.cos(camYaw) * CAM_DIST * t, py = G.cam.y + CAM_HEIGHT * t;
+      const t = k / 24, px = G.cam.x + Math.sin(camYaw) * CAM_DIST * t, pz = G.cam.z + Math.cos(camYaw) * CAM_DIST * t, py = G.cam.y + CH * t;
       if (obstHeightAt(px, pz) > py - 0.3) { f = Math.max(0.25, (k - 1.5) / 24); break; }
     }
     camDistK += (f - camDistK) * (f < camDistK ? 0.4 : 0.08);
-    camera.position.set(G.cam.x + Math.sin(camYaw) * CAM_DIST * camDistK, G.cam.y + CAM_HEIGHT * camDistK, G.cam.z + Math.cos(camYaw) * CAM_DIST * camDistK);
+    camera.position.set(G.cam.x + Math.sin(camYaw) * CAM_DIST * camDistK, G.cam.y + CH * camDistK, G.cam.z + Math.cos(camYaw) * CAM_DIST * camDistK);
     // 照準(画面中央)が自分の少し前の足元を指すように、少し前を見る
-    camera.lookAt(G.cam.x + fwx * 3, G.cam.y - 1.1, G.cam.z + fwz * 3);
+    if (ufoCam) camera.lookAt(G.cam.x + fwx * 6, focus.y - 5, G.cam.z + fwz * 6); // UFOは斜め前下を照準(UFOは照準の上に見える)
+    else camera.lookAt(G.cam.x + fwx * 3, G.cam.y - 1.1, G.cam.z + fwz * 3);
   }
   camera.updateMatrixWorld();
 
@@ -2172,7 +2187,7 @@ function setupHUD(hide) {
     const human = G.player.kind === 'human', ufo = !human && ONI[G.player.type].fly;
     $('bJump').style.display = ufo ? 'none' : 'flex';
     $('bUp').style.display = $('bDown').style.display = ufo ? 'flex' : 'none';
-    $('atkLabel').textContent = ufo ? 'ビーム' : 'タッチ/破壊';
+    $('atkLabel').textContent = ufo ? '凍結ビーム' : 'タッチ/破壊';
     ['bPick', 'bBuild', 'bHit'].forEach((id) => ($(id).style.display = human ? 'flex' : 'none'));
     $('bAttack').style.display = human ? 'none' : 'flex';
     $('buttons').classList.toggle('oni', !human);
@@ -2200,7 +2215,7 @@ function updateHUD() {
     html = `<div class="row">${ONI[p.type].name}</div>
       <div class="row">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ' ' + ROOMS[p.room].name : '-'}${!p.entered ? ' <span style="color:#ffd34d">扉を開けている…</span>' : ''}</div>
       <div class="row" style="font-size:11px;color:#ffd34d">強化: ${p.boost ? BOOSTS[p.boost].name : '-'}</div>` +
-      (ONI[p.type].fly ? `<div class="row" style="font-size:11px;color:#9dff8a">高さ ${p.y.toFixed(1)}　ビーム ${p.beamCd > 0 ? Math.ceil(p.beamCd) + '秒' : 'OK'}　捕獲 ${p.captives.length}人${p.breakTarget ? `　<span style="color:#ff9a3c">破壊中 ${Math.min(99, Math.round((p.breakT / (p.breakTarget.h * BEAM_BREAK_TIME)) * 100))}%</span>` : ''}${p.stun > 0 ? '　<span style="color:#ff8a8a">操作不能!</span>' : ''}</div>` : '');
+      (ONI[p.type].fly ? `<div class="row" style="font-size:11px;color:#9dff8a">高さ ${p.y.toFixed(1)}　凍結ビーム 連射OK${p.stun > 0 ? '　<span style="color:#ff8a8a">操作不能!</span>' : ''}</div>` : '');
   }
   const s = $('status'); if (s._h !== html) { s.innerHTML = html; s._h = html; }
 }
@@ -2240,7 +2255,7 @@ function renderWait() {
       <div class="wcol"><h3>1. 鬼の種類</h3>
         <button class="wbtn${sel(p.type === 'carnivore')}" data-w="type:carnivore">🐺 肉食動物<span>足が速い。ジャンプは低い。高い場所の人にはタッチできない</span></button>
         <button class="wbtn${sel(p.type === 'monster')}" data-w="type:monster">👹 モンスター<span>遅いが壁・足場を1〜2回で壊す。高さ1まで届く</span></button>
-        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ(遅め)。真下の人をビームで吸い上げる。屋根の下には届かない</span></button>
+        <button class="wbtn${sel(p.type === 'alien')}" data-w="type:alien">🛸 宇宙人<span>UFOで空を飛ぶ。斜め下へ凍結ビームを連射。建物も当て続ければ壊せる</span></button>
       </div>
       <div class="wcol"><h3>2. ${split ? `部屋をえらぶ（定員${ONI_ROOM_CAP}匹）` : '部屋に投票'}</h3>
         ${ROOMS.map((r) => { const full = split && oniPop(r.k, p) >= ONI_ROOM_CAP;
