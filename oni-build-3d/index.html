@@ -431,8 +431,9 @@ function blockedTop(x, z, r, y, hgt = HUMAN_H) {
   let m = -Infinity;
   const under = y < -0.25;
   forCells(x, z, r, (i) => {
-    if (i < 0 || obst[i]) { m = Infinity; return; }
-    if (under) { if (!dig[i]) m = Infinity; return; } // 地中: 掘っていない土は壁
+    if (i < 0) { m = Infinity; return; }
+    if (under) { if (!dig[i]) m = Infinity; return; } // 地中: 掘っていない土は壁(地上の木や岩は関係ない)
+    if (obst[i]) { m = Infinity; return; }
     for (const b of cols[i]) if (b.y1 > y + 0.02 && b.y0 < y + hgt - 0.02) m = Math.max(m, b.y0 <= y + 0.02 ? b.y1 : Infinity);
   });
   return m;
@@ -475,7 +476,7 @@ function bfs(start, o) {
   bPrev.fill(-1);
   const lim = o.room === undefined ? -1 : o.room;
   const need = o.hgt || HUMAN_H;
-  const H = o.ug ? (i) => (obst[i] || (lim >= 0 && roomOfX[i % N] !== lim) ? Infinity : dig[i] || o.allowDig ? 0 : Infinity) // 地下
+  const H = o.ug ? (i) => ((lim >= 0 && roomOfX[i % N] !== lim) ? Infinity : dig[i] || o.allowDig ? 0 : Infinity) // 地下
     : (i) => (dig[i] === 2 && i !== o.goal) ? Infinity : ((obst[i] && !(o.breakBlocks && TERRAIN_HP[obst[i]])) || (lim >= 0 && roomOfX[i % N] !== lim) || (!o.breakBlocks && clearance[i] < need) ? Infinity : o.breakBlocks ? 0 : heights[i]);
   const maxUp = (o.maxUp || 0) + 0.01, maxD = o.maxDepth || 9999;
   let head = 0, tail = 0; bQ[tail++] = start; bPrev[start] = start; bDepth[start] = 0;
@@ -1559,7 +1560,7 @@ function jump(e) {
 // 掘る: 地表で掘ると穴、地中で横に掘ると地下通路
 // ---------------------------------------------------------------------
 function setDig(i, st, by) {
-  if (i < 0 || obst[i] || (st === 2 && cols[i].length)) return false;
+  if (i < 0 || (st === 2 && (obst[i] || cols[i].length))) return false;
   if (dig[i] >= st) return false;
   dig[i] = st;
   if (st === 2 && by) holeBy.set(i, by);
@@ -1574,16 +1575,16 @@ function doDig(e) {
   const i = frontCell(e), under = isUnder(e);
   // 地中で正面がもう掘ってある(または掘れない)なら、真上に穴を開けて出口をつくる
   const here = cellOf(e);
-  if (under && dig[here] === 1 && (i < 0 || obst[i] || dig[i] || isPassage(i % N, (i / N) | 0))) {
-    if (cols[here].length || isPassage(here % N, (here / N) | 0)) { if (e.isPlayer) toast('上に建物があって掘れない'); return false; }
+  if (under && dig[here] === 1 && (i < 0 || dig[i])) {
+    if (obst[here] || cols[here].length || isPassage(here % N, (here / N) | 0)) { if (e.isPlayer) toast('上に建物があって掘れない'); return false; }
     setDig(here, 2, e);
     e.digCd = e.kind === 'oni' ? DIG_COOLDOWN_ONI : DIG_COOLDOWN;
     if (e.kind === 'oni') startAnim(e); else e.swing = 0.3;
     if (e.isPlayer) toast('⬆ 上に穴を開けた(ジャンプで地上へ)');
     return true;
   }
-  const why = i < 0 || obst[i] || isPassage(i % N, (i / N) | 0) ? 'ここは掘れない'
-    : under ? (dig[i] ? 'もう掘ってある' : null)
+  const why = under ? (i < 0 ? 'ここは掘れない' : dig[i] ? 'もう掘ってある' : null) // 地中はどこでも掘れる
+    : i < 0 || obst[i] || isPassage(i % N, (i / N) | 0) ? 'ここは掘れない'
     : dig[i] === 2 ? 'もう穴がある' : cols[i].length ? '建物があって掘れない' : null;
   if (why) { if (e.isPlayer) toast(why); return false; }
   setDig(i, under ? 1 : 2, e);
@@ -2696,7 +2697,27 @@ function project(x, y, z) {
   return { x: (_v.x + 1) / 2 * innerWidth, y: (1 - _v.y) / 2 * innerHeight };
 }
 // 地中: いちばん近い穴(出口)の方向を矢印で示す
+function updateMoveArrow(focus) {
+  let a = G3.moveArrow;
+  if (!a) {
+    const sh = new THREE.Shape();
+    [[-0.1, -0.35], [0.1, -0.35], [0.1, 0.1], [0.28, 0.1], [0, 0.5], [-0.28, 0.1], [-0.1, 0.1]].forEach(([x, y], k) => (k ? sh.lineTo(x, y) : sh.moveTo(x, y)));
+    const geo = new THREE.ShapeGeometry(sh); geo.rotateX(Math.PI / 2); // 先端が +z を向く
+    a = G3.moveArrow = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x5ef0ff, side: THREE.DoubleSide, depthTest: false, transparent: true, opacity: 0.9 }));
+    a.renderOrder = 999; a.frustumCulled = false; scene.add(a);
+  }
+  const on = focus && isUnder(focus) && focus.state !== 'out';
+  a.visible = !!on;
+  if (!on) { a.last = null; return; }
+  // 進行方向: 動いていれば移動の向き、止まっていれば向いている方向
+  if (a.last && Math.hypot(focus.x - a.last.x, focus.z - a.last.z) > 0.004) a.dir = Math.atan2(focus.x - a.last.x, focus.z - a.last.z);
+  else if (!a.last || a.dir === undefined) a.dir = focus.yaw || 0;
+  a.last = { x: focus.x, z: focus.z };
+  a.position.set(focus.x + Math.sin(a.dir) * 1.8, focus.y + 0.75, focus.z + Math.cos(a.dir) * 1.8);
+  a.rotation.y = a.dir;
+}
 function updateUgNav(focus) {
+  updateMoveArrow(focus);
   const nav = $('ugNav');
   const hole = focus && isUnder(focus) && focus.state !== 'out' ? nearestHole(focus) : -1;
   if (hole < 0) { nav.style.display = 'none'; return; }
