@@ -134,6 +134,9 @@
   .wbtn:active { transform: scale(.97); }
   .wbtn:disabled { opacity: .35; filter: grayscale(1); }
   .wbtn .who { font-size: 11px; color: #9fd0ff; }
+  #ugNav { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 8; pointer-events: none; display: none; text-align: center; color: #ffe08a; text-shadow: 0 0 6px #000, 0 0 3px #000; }
+  #ugArrow { font-size: 64px; line-height: 1; transition: transform .08s linear; }
+  #ugText { font-size: 15px; font-weight: bold; margin-top: 4px; }
   #alert { position: fixed; left: 50%; top: 38%; transform: translate(-50%, -50%); z-index: 8; pointer-events: none; display: none;
            font-size: 44px; font-weight: 900; color: #ff3b3b; text-shadow: 0 0 12px #000, 0 0 4px #000; animation: alertBlink .35s infinite; white-space: nowrap; }
   @keyframes alertBlink { 50% { opacity: .35; transform: translate(-50%, -50%) scale(1.06); } }
@@ -174,6 +177,7 @@
 <div id="screen"></div>
 <div id="wait"></div>
 <div id="alert">⚠ 鬼が来た！</div>
+<div id="ugNav"><div id="ugArrow">⬆</div><div id="ugText"></div></div>
 <div id="rotate"><div class="icon">📱</div>スマホを横にしてください</div>
 <div id="loadErr">3D描画ライブラリ(Three.js)を読み込めませんでした。<br>インターネット接続を確認して再読み込みしてください。</div>
 
@@ -2655,12 +2659,26 @@ function project(x, y, z) {
   if (_v.z > 1 || _v.z < -1) return null;
   return { x: (_v.x + 1) / 2 * innerWidth, y: (1 - _v.y) / 2 * innerHeight };
 }
+// 地中: いちばん近い穴(出口)の方向を矢印で示す
+function updateUgNav(focus) {
+  const nav = $('ugNav');
+  const hole = focus && isUnder(focus) && focus.state !== 'out' ? nearestHole(focus) : -1;
+  if (hole < 0) { nav.style.display = 'none'; return; }
+  const dx = cX(hole) - focus.x, dz = cZ(hole) - focus.z, d = Math.hypot(dx, dz);
+  const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw), rx = Math.cos(camYaw), rz = -Math.sin(camYaw);
+  nav.style.display = 'block';
+  const here = d < 0.8;
+  $('ugArrow').textContent = here ? '⤒' : '⬆';
+  $('ugArrow').style.transform = here ? 'none' : `rotate(${Math.atan2(dx * rx + dz * rz, dx * fx + dz * fz)}rad)`;
+  $('ugText').textContent = here ? '出口の真下: ジャンプで地上へ' : `出口(穴)まで ${Math.round(d)}m`;
+}
 function updateLabels() {
   const lockEl = $('lock'), pl = G.player;
   const lk = pl.kind === 'oni' && ONI[pl.type].fly && G.phase === 'night' && pl.entered && pl.stun <= 0 ? lockTarget(pl) : null;
   const lp = lk ? project(lk.x, lk.y + 0.9, lk.z) : null;
   if (lp) { lockEl.style.display = 'block'; lockEl.style.left = lp.x + 'px'; lockEl.style.top = lp.y + 'px'; } else lockEl.style.display = 'none';
   const focus = G.player.state === 'out' && G.spectate ? G.spectate : G.player;
+  updateUgNav(focus);
   // 地中にいる人には、土ごしに鬼の位置を表示
   const marks = pl.kind === 'human' && isUnder(focus) && G.phase === 'night';
   for (const o of G.onis) {
