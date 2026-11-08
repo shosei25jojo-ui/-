@@ -259,6 +259,7 @@ const ONI_ATTACK_RANGE = 1.3;
 const UG_FLOOR = -3.1, UG_CEIL = -0.3; // 地下通路の床と天井の高さ(天井の上は地表の土)
 const DIG_COOLDOWN = 0.4;            // 人が掘る間隔(秒)
 const DIG_COOLDOWN_ONI = 0.8;        // 鬼が掘る間隔(秒)
+const FILL_COST = 2;                 // 地中から穴を埋めるのに使う資材(木2 または 石2)
 const FIND_DIST = 3;                 // 鬼が地中でこの距離まで近づくと、地中の人を見つけられる
 const ONI_ATTACK_COOLDOWN = 1.5;     // 攻撃のあと次の攻撃ができるまでの秒数(赤鬼はこの1.5倍)
 const DUST_MAX = 20;                 // 同時に出せる土煙の数(スマホで重くならないように)
@@ -319,7 +320,8 @@ let terrHP = new Float32Array(0), terrInst = new Map(), hutOf = new Int16Array(0
 // heights: 地面から続くブロックの上面(歩ける高さ)  clearance: その上の空き(頭上の高さ)  topH: 一番上のブロックの上面
 let obst = new Uint8Array(N * N), heights = new Float32Array(N * N), clearance = new Float32Array(N * N), topH = new Float32Array(N * N), cols = [], huts = [];
 let vox = [];
-let dig = new Uint8Array(0);         // 0=土 1=地下通路(上に土がある) 2=穴(地表から開いている)
+let dig = new Uint8Array(0);
+let holeBy = new Map();              // 穴のマス → 掘った人         // 0=土 1=地下通路(上に土がある) 2=穴(地表から開いている)
 const isUnder = (e) => e.y < -0.25;  // 地中にいるか
 // 地中の人は鬼から見えない(鬼も地中で近くまで掘り進めば見つかる)
 const visibleToOni = (h, o) => !isUnder(h) || (isUnder(o) && Math.hypot(h.x - o.x, h.z - o.z) <= FIND_DIST);                        // ボクセル: vox[lv*N*N + i] = そのマスを占めるブロック
@@ -363,7 +365,7 @@ function genField() {
     for (const [dx, dz] of DIRS4) { const j = idx(x + dx, z + dz); if (!obst[j] && !seen[j]) { seen[j] = 1; q.push(j); } }
   }
   for (let i = 0; i < N * N; i++) if (!obst[i] && !seen[i]) { const r = ROOMS[roomAt(i % N)]; obst[i] = r && r.terrain === 'factory' ? OB_FWALL : OB_ROCK; }
-  terrHP = new Float32Array(N * N); hutOf = new Int16Array(N * N).fill(-1); terrInst = new Map(); dig = new Uint8Array(N * N);
+  terrHP = new Float32Array(N * N); hutOf = new Int16Array(N * N).fill(-1); terrInst = new Map(); dig = new Uint8Array(N * N); holeBy = new Map();
   for (let i = 0; i < N * N; i++) if (TERRAIN_HP[obst[i]]) terrHP[i] = TERRAIN_HP[obst[i]];
   huts.forEach((h, j) => { h.hp = TERRAIN_HP[OB_HUT]; for (let dz = 0; dz < 3; dz++) for (let dx = 0; dx < 3; dx++) hutOf[idx(h.x + dx, h.z + dz)] = j; });
 }
@@ -1556,10 +1558,11 @@ function jump(e) {
 // ---------------------------------------------------------------------
 // 掘る: 地表で掘ると穴、地中で横に掘ると地下通路
 // ---------------------------------------------------------------------
-function setDig(i, st) {
+function setDig(i, st, by) {
   if (i < 0 || obst[i] || (st === 2 && cols[i].length)) return false;
   if (dig[i] >= st) return false;
   dig[i] = st;
+  if (st === 2 && by) holeBy.set(i, by);
   burst(cX(i), st === 2 ? 0.1 : UG_FLOOR + 1, cZ(i), 0x7a5233, 12);
   rebuildUnderground();
   return true;
@@ -1569,13 +1572,42 @@ function doDig(e) {
   if (e.kind === 'human' && e.state !== 'ok') return false;
   if ((e.digCd || 0) > 0) return false;
   const i = frontCell(e), under = isUnder(e);
+  // 地中で正面がもう掘ってある(または掘れない)なら、真上に穴を開けて出口をつくる
+  const here = cellOf(e);
+  if (under && dig[here] === 1 && (i < 0 || obst[i] || dig[i] || isPassage(i % N, (i / N) | 0))) {
+    if (cols[here].length || isPassage(here % N, (here / N) | 0)) { if (e.isPlayer) toast('上に建物があって掘れない'); return false; }
+    setDig(here, 2, e);
+    e.digCd = e.kind === 'oni' ? DIG_COOLDOWN_ONI : DIG_COOLDOWN;
+    if (e.kind === 'oni') startAnim(e); else e.swing = 0.3;
+    if (e.isPlayer) toast('⬆ 上に穴を開けた(ジャンプで地上へ)');
+    return true;
+  }
   const why = i < 0 || obst[i] || isPassage(i % N, (i / N) | 0) ? 'ここは掘れない'
     : under ? (dig[i] ? 'もう掘ってある' : null)
     : dig[i] === 2 ? 'もう穴がある' : cols[i].length ? '建物があって掘れない' : null;
   if (why) { if (e.isPlayer) toast(why); return false; }
-  setDig(i, under ? 1 : 2);
+  setDig(i, under ? 1 : 2, e);
   e.digCd = e.kind === 'oni' ? DIG_COOLDOWN_ONI : DIG_COOLDOWN;
   if (e.kind === 'oni') startAnim(e); else e.swing = 0.3;
+  return true;
+}
+// 地中から、自分が掘った穴を資材でふさぐ(地上からは穴が消え、下の通路は残る)
+function fillTarget(h) {
+  if (!isUnder(h)) return -1;
+  for (const i of [cellOf(h), frontCell(h)]) if (i >= 0 && dig[i] === 2 && holeBy.get(i) === h) return i;
+  return -1;
+}
+function fillHole(h) {
+  if (h.kind !== 'human' || h.state !== 'ok') return false;
+  const i = fillTarget(h);
+  if (i < 0) { if (h.isPlayer) toast(isUnder(h) ? '自分が掘った穴の下か、穴の手前で使おう' : '地中から使おう'); return false; }
+  const res = h.stone >= FILL_COST ? 'stone' : h.wood >= FILL_COST ? 'wood' : null;
+  if (!res) { if (h.isPlayer) toast(`資材が足りない(木${FILL_COST}か石${FILL_COST})`); return false; }
+  h[res] -= FILL_COST;
+  dig[i] = 1; holeBy.delete(i);
+  burst(cX(i), UG_CEIL, cZ(i), res === 'stone' ? 0x9aa0a8 : 0xb07a45, 14);
+  rebuildUnderground();
+  if (h.isPlayer) toast('🪨 穴をふさいだ');
   return true;
 }
 const holeCells = () => { const a = []; for (let i = 0; i < N * N; i++) if (dig[i] === 2) a.push(i); return a; };
@@ -1882,6 +1914,7 @@ bindButton($('bBuild'), () => { buildPress.down = true; buildPress.t = 0; buildP
   (cancel) => { if (buildPress.down && !buildPress.switched && !cancel) pressBuild(); buildPress.down = false; $('buildRing').style.borderColor = 'transparent'; });
 function pressBuild() {
   if (!canAct()) return;
+  if (isUnder(G.player)) { fillHole(G.player); return; } // 地中では「埋める」
   const t = G.buildTarget;
   if (!t) { toast(`照準を${BUILD_REACH}マス以内の地面かブロックに向けよう`); return; }
   placeBlockAt(G.player, t.x, t.lv, t.z, G.player.buildType, false);
@@ -2086,7 +2119,7 @@ function humanAI(h, dt) {
         ai.buildT = 0.35;
         const q = ai.queue[0];
         const near = Math.hypot(q.x + 0.5 - h.x, q.z + 0.5 - h.z) < 4.5;
-        const ok = q.type === 'hole' || q.type === 'tunnel' ? near && setDig(idx(q.x, q.z), q.type === 'hole' ? 2 : 1) : near && placeBlockAt(h, q.x, q.lv, q.z, q.type, true);
+        const ok = q.type === 'hole' || q.type === 'tunnel' ? near && setDig(idx(q.x, q.z), q.type === 'hole' ? 2 : 1, h) : near && placeBlockAt(h, q.x, q.lv, q.z, q.type, true);
         if (ok) ai.queue.shift(); else ai.queue = [];
       }
     } else {
@@ -2113,8 +2146,11 @@ function humanAI(h, dt) {
       if (ug.length) {
         let hole = -1, hd = -1;
         for (const i of holeCells()) { const d = Math.hypot(cX(i) - ug[0].x, cZ(i) - ug[0].z); if (d > hd) { hd = d; hole = i; } }
-        if (hole >= 0) { if (cellOf(h) === hole) jump(h); else mv = seekUG(h, cX(hole), cZ(hole), false); }
+        if (hole >= 0 && Math.hypot(cX(hole) - ug[0].x, cZ(hole) - ug[0].z) > 2) { if (cellOf(h) === hole) jump(h); else mv = seekUG(h, cX(hole), cZ(hole), false); }
+        else if (dig[cellOf(h)] === 1 && !cols[cellOf(h)].length && (h.digCd || 0) <= 0) { setDig(cellOf(h), 2, h); h.digCd = DIG_COOLDOWN; } // 出口がなければ真上を掘る
         if (h.stamina >= HIT_COST && ai.hitCd <= 0 && canHit(h, ug[0])) { h.yaw = Math.atan2(ug[0].x - h.x, ug[0].z - h.z); doHit(h); ai.hitCd = 1.2; }
+      } else if (fillTarget(h) >= 0 && onis.some((o) => !isUnder(o) && hdist(o, h) < 14) && (h.stone >= FILL_COST || h.wood >= FILL_COST)) {
+        fillHole(h); // 地上に鬼がいる → 穴をふさいで隠れる
       } else if (dig[cellOf(h)] === 2) { // 穴の真下にいると見つかりやすいので通路へ
         const x = Math.floor(h.x), z = Math.floor(h.z);
         for (const [dx, dz] of DIRS4) if (inField(x + dx, z + dz) && dig[idx(x + dx, z + dz)] === 1) { mv = dir2(x + dx + 0.5 - h.x, z + dz + 0.5 - h.z); break; }
@@ -2789,11 +2825,11 @@ function updateHUD() {
     const st = p.state === 'out' ? '<span style="color:#ff8787">脱落・観戦中</span>'
              : p.state === 'frozen' ? `<span style="color:#9be7ff">凍結中 ❄${Math.ceil(p.freezeTimer)}</span>` : '';
     html = `<div class="row"><span class="wood">🪵 木材 ${p.wood}</span><span class="stone">🪨 石 ${p.stone}</span></div>
-      <div class="row">建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildTarget ? (G.buildTarget.why ? ` <span style="color:#ff8a8a;font-size:11px">${G.buildTarget.why}</span>` : ' <span style="color:#7CFC9A">▶置ける</span>') : ''}</div>
+      <div class="row">${isUnder(p) ? `穴を埋める(木${FILL_COST}か石${FILL_COST})${fillTarget(p) >= 0 ? ' <span style="color:#7CFC9A">▶埋められる</span>' : ''}</div><div style="display:none">` : ''}建築: ${PARTS[p.buildType].name}(${costText(p.buildType)})${G.buildTarget ? (G.buildTarget.why ? ` <span style="color:#ff8a8a;font-size:11px">${G.buildTarget.why}</span>` : ' <span style="color:#7CFC9A">▶置ける</span>') : ''}</div>
       <div class="row"><span style="font-size:11px">スタミナ</span><div class="bar"><div style="width:${(p.stamina / STAMINA_MAX) * 100}%"></div></div></div>
       <div class="row" style="font-size:11px;color:#c8d3e6">${isUnder(p) ? '🕳 地中' : '高さ ' + p.y.toFixed(1)}　凍結 ${p.freezeCount}/${MAX_FREEZE_COUNT} ${st}</div>
       <div class="row" style="font-size:11px">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ROOMS[p.room].name : '-'}${night && !G.rescueOpened && G.oniRooms.length < ROOM_COUNT ? `　通路が開くまで ${Math.max(0, Math.ceil(RESCUE_OPEN - G.nightT))}秒` : night && G.gatesOpen ? '　🚪通路オープン' : ''}</div>`;
-    $('buildLabel').textContent = PARTS[p.buildType].name;
+    $('buildLabel').textContent = isUnder(p) ? '穴を埋める' : PARTS[p.buildType].name;
   } else {
     html = `<div class="row">${ONI[p.type].name}</div>
       <div class="row">部屋: ${p.room >= 0 ? ROOMS[p.room].icon + ' ' + ROOMS[p.room].name : '-'}${!p.entered ? ' <span style="color:#ffd34d">扉を開けている…</span>' : ''}</div>
